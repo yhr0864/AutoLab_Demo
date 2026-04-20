@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Feature SiLA2Version="1.0"
+         FeatureVersion="1.0"
+         Originator="org.example"
+         Category="demo"
+         xmlns="http://www.sila-standard.org">
+
+    <Identifier>CentrifugeControl</Identifier>
+    <DisplayName>离心机控制</DisplayName>
+    <Description>控制离心机的启动、停止和状态查询</Description>
+
+    <!-- 命令：启动离心机 -->
+    <Command>
+        <Identifier>StartCentrifuge</Identifier>
+        <DisplayName>启动离心机</DisplayName>
+        <Description>设置转速和时间并启动离心机</Description>
+        <Observable>No</Observable>
+        <Parameter>
+            <Identifier>RPM</Identifier>
+            <DisplayName>转速</DisplayName>
+            <Description>目标转速 (转/分钟)</Description>
+            <DataType><Basic>Integer</Basic></DataType>
+        </Parameter>
+        <Parameter>
+            <Identifier>Duration</Identifier>
+            <DisplayName>持续时间</DisplayName>
+            <Description>离心时间（秒）</Description>
+            <DataType><Basic>Integer</Basic></DataType>
+        </Parameter>
+        <Response>
+            <Identifier>Message</Identifier>
+            <DisplayName>响应消息</DisplayName>
+            <Description>执行结果消息</Description>  
+            <DataType><Basic>String</Basic></DataType>
+        </Response>
+    </Command>
+
+    <!-- 命令：停止离心机 -->
+    <Command>
+        <Identifier>StopCentrifuge</Identifier>
+        <DisplayName>停止离心机</DisplayName>
+        <Description>立即停止离心机</Description>
+        <Observable>No</Observable>
+        <Response>
+            <Identifier>Message</Identifier>
+            <DisplayName>响应消息</DisplayName>
+            <Description>执行结果消息</Description>  
+            <DataType><Basic>String</Basic></DataType>
+        </Response>
+    </Command>
+
+    <!-- 属性：当前转速 -->
+    <Property>
+        <Identifier>CurrentRPM</Identifier>
+        <DisplayName>当前转速</DisplayName>
+        <Description>离心机当前转速</Description>
+        <Observable>No</Observable>
+        <DataType><Basic>Integer</Basic></DataType>
+    </Property>
+
+    <!-- 属性：运行状态 -->
+    <Property>
+        <Identifier>Status</Identifier>
+        <DisplayName>运行状态</DisplayName>
+        <Description>离心机当前状态</Description>
+        <Observable>No</Observable>
+        <DataType><Basic>String</Basic></DataType>
+    </Property>
+
+</Feature>

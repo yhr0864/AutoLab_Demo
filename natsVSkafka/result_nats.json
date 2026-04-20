@@ -1,0 +1,11 @@
+{
+  "system": "NATS JetStream",
+  "total_messages": 100000,
+  "payload_bytes": 512,
+  "pub_elapsed": 6.284,
+  "sub_elapsed": 7.314,
+  "pub_throughput": 15914.0,
+  "sub_throughput": 13672.0,
+  "pub_mb_per_sec": 7.77,
+  "sub_mb_per_sec": 6.68
+}

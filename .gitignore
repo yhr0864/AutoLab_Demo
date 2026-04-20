@@ -1,0 +1,6 @@
+**/__pycache__/
+Token.txt
+lab_system/cluster/storage/
+kafka_data
+nats_data
+natsVSkafka/src/nats/data

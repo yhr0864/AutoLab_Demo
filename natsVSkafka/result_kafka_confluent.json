@@ -1,0 +1,11 @@
+{
+  "system": "Kafka-confluent",
+  "total_messages": 100000,
+  "payload_bytes": 512,
+  "pub_elapsed": 2.213,
+  "sub_elapsed": 0.466,
+  "pub_throughput": 45180.0,
+  "sub_throughput": 214373.0,
+  "pub_mb_per_sec": 22.06,
+  "sub_mb_per_sec": 104.67
+}
