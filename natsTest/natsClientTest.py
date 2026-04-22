@@ -112,11 +112,11 @@ async def query_history(js: JetStreamContext):
 async def main():
     # 连接 NATS
     nc = await nats.connect(
-        servers="nats://10.169.108.55:4222",
-        name="temperature-monitor",
+        servers="nats://10.169.108.55:5222",
+        name="PCR_connection",
         connect_timeout=3,
     )
-    js = nc.jetstream()
+    js = nc.jetstream(domain="hub")
 
     print("✅ 监控系统启动")
     print("📡 订阅所有传感器数据: lab.device.>")
@@ -125,7 +125,7 @@ async def main():
     await query_history(js)
 
     # 订阅实时数据（通配符订阅所有传感器）
-    sub = await js.subscribe(
+    sub = await nc.subscribe(
         subject="lab.device.>",
         cb=handle_temperature,
     )

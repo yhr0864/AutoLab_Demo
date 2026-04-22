@@ -1,0 +1,2 @@
+server jetstream -> monitor (core nats) 无stream创建只能
+leafNode2 without jetstream   -> device client (core nats)

@@ -7,7 +7,7 @@ async def setup():
     # 连接 NATS
     try:
         nc = await nats.connect(
-            "nats://localhost:4222",
+            "nats://10.169.108.55:4222",
             connect_timeout=3,  # 3秒连不上就报错
         )
         print("✅ 连接成功")
