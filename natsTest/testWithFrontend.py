@@ -48,8 +48,10 @@ async def run_sensor(nc, sensor_id: str):
         }
 
         # 发布到对应主题
-        subject = f"lab.device.{sensor_id}"
-        await nc.publish(subject, json.dumps(message).encode())
+        subject = f"lab.device.temp"
+        await nc.publish(
+            subject, json.dumps(message, ensure_ascii=False).encode('utf8')
+        )
 
         print(
             f"📤 [{sensor_id}] {config['location']}: "
@@ -57,7 +59,7 @@ async def run_sensor(nc, sensor_id: str):
         )
 
         tick += 1
-        await asyncio.sleep(2)  # 每2秒上报一次
+        await asyncio.sleep(5)  # 每2秒上报一次
 
 
 async def ensure_stream(js: JetStreamContext, stream_name):
@@ -68,7 +70,7 @@ async def ensure_stream(js: JetStreamContext, stream_name):
         print(f"Stream '{stream_name}' 已存在")
 
     except NotFoundError:
-        await js.add_stream(name=stream_name, subjects=["lab.device.>"])
+        await js.add_stream(name=stream_name)
         print(f"Stream '{stream_name}' 已创建")
 
 
@@ -76,13 +78,13 @@ async def main():
     # 连接 NATS Server
     try:
         nc = await nats.connect(
-            servers="nats://192.168.198.128:5223",
+            servers="nats://10.169.108.55:4222",  # 这里连接本地leaf node2
             name="PCR_connection",
             connect_timeout=3,
         )
 
-        js = nc.jetstream(domain="leaf1")
-        await ensure_stream(js, "TEST_DEVICE")
+        # js = nc.jetstream(domain="hub")
+        # await ensure_stream(nc, "TEST_DEVICE")
         print(f"✅ 已连接到 NATS Server")
     except Exception as e:
         print("❌ 连接失败，请先启动 nats-server")
@@ -91,7 +93,7 @@ async def main():
     print(f"{'='*50}")
 
     # 并发运行所有传感器
-    tasks = [asyncio.create_task(run_sensor(js, sid)) for sid in SENSORS]
+    tasks = [asyncio.create_task(run_sensor(nc, sid)) for sid in SENSORS]
 
     try:
         await asyncio.gather(*tasks)
