@@ -1,0 +1,78 @@
+# =========================
+# PostgreSQL 配置
+# =========================
+database:
+  host: 10.169.109.132
+  port: 5432
+  user: admin
+  password: Pg@2024Secure
+  database: mydb
+
+# =========================
+# NATS / JetStream 配置
+# =========================
+nats:
+  url: nats://192.168.198.128:5223  # 本地叶节点
+  producer_name: lab_device_producer
+  consumer_name: lab_device_consumer
+
+stream:
+  name: LAB_DEVICE_STREAM
+  subjects:
+    - lab.device.>
+  durable_name: pg_writer
+
+# =========================
+# 应用公共配置
+# =========================
+app:
+  sample_interval: 2
+  db_batch_size: 100
+  db_flush_interval: 3
+
+# =========================
+# 生产者侧：设备清单
+# producer 只负责采集并全量发布
+# =========================
+devices:
+  - device_id: sensor_001
+    type: temperature_sensor
+    location: PCR_01
+    params:
+      normal_range: [36.0, 38.0]
+
+  - device_id: sensor_002
+    type: temperature_sensor
+    location: PCR_02
+    params:
+      normal_range: [2.0, 8.0]
+
+  - device_id: env_001
+    type: env_sensor
+    location: Lab_A
+    params:
+      temp_range: [20.0, 28.0]
+      humidity_range: [40.0, 70.0]
+
+# =========================
+# 消费者侧：入库策略
+# 按 device_type 维度配置
+# =========================
+storage_policies:
+  temperature_sensor:
+    type: metric_change
+    metric_name: temperature
+    threshold: 0.3
+    stable_duration: 60
+    slow_write_interval: 30
+    force_write_interval: 60
+    normal_status: 温度正常
+
+  env_sensor:
+    type: metric_change
+    metric_name: temperature
+    threshold: 0.5
+    stable_duration: 60
+    slow_write_interval: 30
+    force_write_interval: 60
+    normal_status: 正常
