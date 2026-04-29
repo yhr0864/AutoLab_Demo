@@ -26,9 +26,9 @@ stream:
 # 应用公共配置
 # =========================
 app:
-  sample_interval: 2
-  db_batch_size: 100
-  db_flush_interval: 3
+  sample_interval: 2  # Producer 采样间隔（秒）
+  db_batch_size: 100  # Consumer 批量入库条数
+  db_flush_interval: 3  # Consumer 批量刷库超时时间（秒）
 
 # =========================
 # 生产者侧：设备清单
