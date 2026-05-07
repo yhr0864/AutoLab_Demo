@@ -116,7 +116,7 @@ async def main():
         name="PCR_connection",
         connect_timeout=3,
     )
-    js = nc.jetstream(domain="server-for-leaf")
+    js = nc.jetstream()
 
     print("✅ 监控系统启动")
     print("📡 订阅所有传感器数据: lab.device.>")
@@ -126,8 +126,7 @@ async def main():
 
     # 订阅实时数据（通配符订阅所有传感器）
     sub = await js.subscribe(
-        subject="lab.device.>",
-        cb=handle_temperature,
+        subject="lab.device.>", cb=handle_temperature, durable="device"
     )
 
     print("👁️  开始实时监控...")

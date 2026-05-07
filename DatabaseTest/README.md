@@ -263,6 +263,11 @@ storage_policies:
 ```
 ---
 
+## Server可视化
+从NATS官方github可以获取可视化方案：https://github.com/nats-io/prometheus-nats-exporter/tree/main/walkthrough
+
+---
+
 ## 后续可优化方向
 当前项目是一个可运行的基础版架构，后续建议继续完善以下能力：
 

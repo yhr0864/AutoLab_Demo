@@ -12,7 +12,8 @@ database:
 # NATS / JetStream 配置
 # =========================
 nats:
-  url: nats://192.168.198.128:5223  # 本地叶节点
+  url_prod: nats://192.168.198.128:5223  # 本地叶节点
+  url_cons: nats://10.169.109.132:4222  # 远程服务器
   producer_name: lab_device_producer
   consumer_name: lab_device_consumer
 

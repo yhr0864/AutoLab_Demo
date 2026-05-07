@@ -6,7 +6,6 @@ from msgs.publisher import NATSPublisher
 from utils.config_loader import load_config
 from utils.logger import setup_logger
 
-
 logger = setup_logger("producer_app")
 
 
@@ -36,7 +35,7 @@ async def main():
 
     # 初始化 NATS 客户端
     nats_client = NATSClient(
-        url=config["nats"]["url"],
+        url=config["nats"]["url_prod"],
         client_name=config["nats"]["producer_name"],
     )
     await nats_client.connect()

@@ -4,3 +4,4 @@ Token.txt
 kafka_data
 nats_data
 natsVSkafka/src/nats/data
+**/data/
