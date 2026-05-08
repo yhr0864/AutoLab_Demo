@@ -120,7 +120,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_jetstream_stats_storage{server_id=~\"$server\"})/sum(gnatsd_varz_jetstream_config_max_storage{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_jetstream_stats_storage{server_id=~\"$server\",job=\"nats_server\"})/sum(gnatsd_varz_jetstream_config_max_storage{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -177,7 +177,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_jetstream_stats_storage{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_jetstream_stats_storage{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -236,7 +236,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_jetstream_stats_memory{server_id=~\"$server\"})/sum(gnatsd_varz_jetstream_config_max_memory{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_jetstream_stats_memory{server_id=~\"$server\",job=\"nats_server\"})/sum(gnatsd_varz_jetstream_config_max_memory{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -293,7 +293,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_jetstream_stats_memory{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_jetstream_stats_memory{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -348,7 +348,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_connections{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_connections{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -399,7 +399,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_jetstream_config_max_storage{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_jetstream_config_max_storage{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -450,7 +450,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(gnatsd_varz_jetstream_config_max_memory{server_id=~\"$server\"})",
+          "expr": "sum(gnatsd_varz_jetstream_config_max_memory{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -504,7 +504,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(jetstream_server_total_consumers{server_id=~\"$server\"})",
+          "expr": "sum(jetstream_server_total_consumers{server_id=~\"$server\",job=\"nats_server\"})",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
@@ -760,7 +760,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(rate(jetstream_stream_last_seq{server_id=~\"$server\",stream_name=~\"$stream\"}[$__rate_interval])) by (stream_name)",
+          "expr": "sum(rate(jetstream_stream_last_seq{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\"}[$__rate_interval])) by (stream_name)",
           "hide": false,
           "interval": "",
           "legendFormat": "{{stream_name}}",
@@ -856,7 +856,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(rate(jetstream_consumer_num_pending{server_id=~\"$server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}[$__rate_interval])+rate(jetstream_consumer_delivered_consumer_seq{server_id=~\"$server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}[$__rate_interval])) by (consumer_name)",
+          "expr": "sum(rate(jetstream_consumer_num_pending{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}[$__rate_interval])+rate(jetstream_consumer_delivered_consumer_seq{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}[$__rate_interval])) by (consumer_name)",
           "hide": false,
           "instant": false,
           "interval": "",
@@ -865,7 +865,7 @@
           "refId": "B"
         },
         {
-          "expr": "- sum(rate(jetstream_consumer_delivered_consumer_seq{server_id=~\"$server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\",consumer_name=~\"$consumer\"}[$__rate_interval])) by (consumer_name)",
+          "expr": "- sum(rate(jetstream_consumer_delivered_consumer_seq{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\",consumer_name=~\"$consumer\"}[$__rate_interval])) by (consumer_name)",
           "hide": false,
           "interval": "",
           "legendFormat": "{{consumer_name}} -",
@@ -947,7 +947,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(jetstream_consumer_delivered_consumer_seq{server_id=~\"$server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) by (consumer_name)",
+          "expr": "sum(jetstream_consumer_delivered_consumer_seq{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) by (consumer_name)",
           "hide": false,
           "interval": "",
           "legendFormat": "{{consumer_name}}",
@@ -1030,7 +1030,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(jetstream_consumer_num_pending{server_id=~\"$server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) by (consumer_name)",
+          "expr": "sum(jetstream_consumer_num_pending{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) by (consumer_name)",
           "hide": false,
           "interval": "",
           "legendFormat": "{{consumer_name}}",
@@ -1113,7 +1113,7 @@
       "pluginVersion": "8.3.4",
       "targets": [
         {
-          "expr": "sum(jetstream_consumer_num_ack_pending{server_id=~\"$server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) by (consumer_name)",
+          "expr": "sum(jetstream_consumer_num_ack_pending{server_id=~\"$server\",job=\"nats_server\",stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) by (consumer_name)",
           "hide": false,
           "interval": "",
           "legendFormat": "{{consumer_name}}",

@@ -72,17 +72,21 @@ iot_project/
 │   ├── temperature_sensor.py
 │   └── env_sensor.py
 │
-├── messaging/
+├── msgs/
 │   ├── nats_client.py
 │   ├── publisher.py
 │   └── consumer.py
 │
-├── storage/
-│   └── postgres_writer.py
+├── database/
+│   └── pg_writer.py
 │
-└── utils/
-    ├── logger.py
-    └── config_loader.py
+├── utils/
+│   ├── logger.py
+│   └── config_loader.py
+│
+└── monitor/
+    ├── grafana-jetstream-dash.json
+    └── grafana-jetstream-dash-leafnode.json
 ```
 ---
 
@@ -184,7 +188,27 @@ USING GIN (data);
 
 ## 启动方式
 1. 启动 NATS Server（开启 JetStream）
+- server直接启动：
 ```bash
+nats-server -c ./nats/nats-server-config/server-monitor.conf
+```
+- 使用docker启动：
+```bash
+# 检查container是否启动
+docker ps -a
+
+# 如果已启动，可以选择关闭
+docker stop nats
+docker rm nats
+
+# 启动server
+docker run -d   --name nats   -p 4222:4222   -p 8222:8222 -p 7422:7422  -v $(pwd)/nats/nats-server-config/docker_nats.conf:/etc/nats/docker_nats.conf:ro   nats:latest   -c /etc/nats/docker_nats.conf
+
+# 查看server
+docker logs nats
+```
+---
+
 # 使用指定本地叶节点配置文件打开server
 nats-server -c ./nats/leaf.conf
 ```
@@ -268,7 +292,31 @@ storage_policies:
 
 ### 可以直接运行下面脚本：
 ```bash
-visualize.bat
+start_monitoring.bat
+```
+---
+
+### 关于Grafana配置文件
+- grafana-jetstream-dash-leafnode.json
+- grafana-jetstream-dash.json
+
+将来可能需要修改的部分（以grafana-jetstream-dash-leafnode.json为例）：
+1. 自定义dashboard uid:
+```json
+"uid": "nats-leaf-node",
+```
+2. 指定数据源：
+```python
+# 通过web端查询如：http://localhost:3000/connections/datasources/edit/afklp72qqqoe8f
+"datasource": {
+          "type": "prometheus",
+          "uid": "afklp72qqqoe8f"
+        } 
+```
+3. 指定filter:
+```python
+# 通过job=\"nats_leaf_node\"指定leaf node数据
+"expr": "sum(gnatsd_varz_connections{server_id=~\"$server\",job=\"nats_leaf_node\"})"
 ```
 ---
 
