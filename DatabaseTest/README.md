@@ -266,6 +266,10 @@ storage_policies:
 ## Server可视化
 从NATS官方github可以获取可视化方案：https://github.com/nats-io/prometheus-nats-exporter/tree/main/walkthrough
 
+### 可以直接运行下面脚本：
+```bash
+visualize.bat
+```
 ---
 
 ## 后续可优化方向
