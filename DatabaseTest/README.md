@@ -194,6 +194,9 @@ nats-server -c ./nats/nats-server-config/server-monitor.conf
 ```
 - 使用docker启动：
 ```bash
+# 安装nats image
+docker pull nats
+
 # 检查container是否启动
 docker ps -a
 

@@ -1,0 +1,52 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>调度系统流程图</title>
+    <!-- 引入 Mermaid 官方渲染库 -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({ startOnLoad: true });
+    </script>
+    <style>
+        body { display: flex; justify-content: center; padding: 50px; background-color: #f9f9f9; }
+        .mermaid { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <div class="mermaid">
+    
+graph TD
+    %% 节点定义
+    subgraph 建模层 [1. 建模与约束层]
+        A[DAG <br/> 描述实验步骤逻辑依赖]
+        B[RCPSP <br/> 引入设备/资源限制转为调度问题]
+    end
+
+    subgraph 策略与求解层 [2. 策略与求解层]
+        C[Rolling Horizon Scheduling <br/> 拆解时域, 构建局部 RCPSP]
+        D[CP-SAT Solver <br/> 求解局部问题, 寻找最优解]
+    end
+
+    subgraph 输出与执行层 [3. 输出与执行层]
+        E[Executable Plan <br/> 生成带时间戳的执行计划]
+        F[硬件控制层 <br/> 驱动机械臂/仪器]
+        G((用户端 UI))
+    end
+
+    %% 连线关系
+    A -->|图结构 + 任务流| B
+    B -->|全局调度模型| C
+    C -->|局部调度切片| D
+    D -->|最优局部调度解| E
+
+    E -->|1. 机器指令/API| F
+    E -.->|2. 时序 DAG / Gantt图| G
+
+    %% 反馈机制 (可选)
+    F -.->|状态反馈/异常中断| C
+
+    </div>
+</body>
+</html>
