@@ -56,7 +56,7 @@ devices:
       humidity_range: [40.0, 70.0]
 
 # =========================
-# 消费者侧：入库策略
+# Producer侧：入库策略
 # 按 device_type 维度配置
 # =========================
 storage_policies:
