@@ -57,10 +57,7 @@ class NATSPublisher:
         发布消息，并在 publish 端根据策略决定是否入库
         """
 
-        # 1. 先发布到 NATS
-        await self.client.js.publish(subject, message.to_json().encode())
-
-        # 2. 根据 device_type 获取入库策略
+        # 1. 根据 device_type 获取入库策略
         policy = self.policy_registry.get(message.device_type)
 
         # 如果没配策略，默认直接入库
@@ -70,8 +67,11 @@ class NATSPublisher:
         else:
             should_store, reason = policy.should_store(message)
 
-        # 3. 根据策略决定是否放入入库队列
+        # 2. 根据策略决定是否放入入库队列
         if should_store:
+            # 3. 发布到 NATS
+            await self.client.js.publish(subject, message.to_json().encode())
+
             await self.queue.put(message)
 
             if self.logger:
