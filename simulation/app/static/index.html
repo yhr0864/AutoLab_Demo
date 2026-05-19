@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>Job Shop 3D Visualization</title>
+
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, "Microsoft YaHei", sans-serif;
+            background: #111827;
+        }
+
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+
+        #panel {
+            position: absolute;
+            left: 16px;
+            top: 16px;
+            width: 330px;
+            padding: 16px;
+            background: rgba(17, 24, 39, 0.88);
+            color: white;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 10;
+            box-shadow: 0 0 12px rgba(0, 0, 0, 0.5);
+        }
+
+        #panel h2 {
+            margin: 0 0 12px 0;
+            font-size: 18px;
+        }
+
+        .row {
+            margin-bottom: 8px;
+        }
+
+        button {
+            margin-right: 6px;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        input {
+            width: 70px;
+            padding: 4px;
+        }
+
+        .legend {
+            display: flex;
+            align-items: center;
+            margin-top: 4px;
+        }
+
+        .box {
+            width: 14px;
+            height: 14px;
+            margin-right: 6px;
+        }
+
+        .idle {
+            background: #22c55e;
+        }
+
+        .busy {
+            background: #facc15;
+        }
+
+        .down {
+            background: #ef4444;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="panel">
+        <h2>Job Shop 3D 仿真可视化</h2>
+
+        <div class="row">
+            随机种子：
+            <input id="seedInput" type="number" value="42" />
+            播放速度：
+            <input id="speedInput" type="number" value="1" min="0.1" step="0.5" />
+        </div>
+
+        <div class="row">
+            <button id="loadBtn">加载仿真</button>
+            <button id="playBtn">播放</button>
+            <button id="pauseBtn">暂停</button>
+            <button id="resetBtn">重置</button>
+        </div>
+
+        <hr />
+
+        <div class="row">理论 Makespan: <span id="plannedMakespan">-</span> h</div>
+        <div class="row">实际 Makespan: <span id="actualMakespan">-</span> h</div>
+        <div class="row">当前仿真时间: <span id="simTime">0.00</span> h</div>
+
+        <hr />
+
+        <div class="legend">
+            <div class="box idle"></div> 机器空闲
+        </div>
+        <div class="legend">
+            <div class="box busy"></div> 机器加工中
+        </div>
+        <div class="legend">
+            <div class="box down"></div> 机器故障/维修
+        </div>
+    </div>
+
+    <canvas id="renderCanvas"></canvas>
+
+    <script src="./main.js"></script>
+</body>
+</html>

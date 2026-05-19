@@ -15,6 +15,28 @@ from app.models.schemas import (
 # FastAPI 接口
 # ======================================================
 
+
+def run_pipeline(jobs, config):
+    """
+    公共流程：
+    1. OR-Tools 求最优排程
+    2. SimPy 加随机扰动仿真
+    """
+    schedule = solve_job_shop(OptimizeRequest(jobs=jobs))
+
+    simulation_result = simulate_schedule(
+        SimulateRequest(
+            schedule=schedule,
+            config=config,
+        )
+    )
+
+    return {
+        "schedule": schedule,
+        "simulation": simulation_result,
+    }
+
+
 app = APIRouter()
 
 
@@ -42,44 +64,14 @@ def simulate(req: SimulateRequest):
 @app.post("/pipeline")
 def pipeline(req: PipelineRequest):
     """
-    一次性完成：
-    1. OR-Tools 求最优排程
-    2. SimPy 加随机扰动仿真
+    正式接口：使用用户提交的 jobs 和 config。
     """
-    schedule = solve_job_shop(OptimizeRequest(jobs=req.jobs))
-
-    simulation_result = simulate_schedule(
-        SimulateRequest(
-            schedule=schedule,
-            config=req.config,
-        )
-    )
-
-    return {
-        "schedule": schedule,
-        "simulation": simulation_result,
-    }
+    return run_pipeline(req.jobs, req.config)
 
 
 @app.get("/demo/pipeline")
 def demo_pipeline(seed: int = 42):
     """
-    使用内置示例数据：
-    1. OR-Tools 求排程
-    2. SimPy 加随机扰动仿真
+    Demo接口: 使用内置示例 jobs, 只允许通过 seed 改变随机结果。
     """
-    jobs = default_jobs()
-
-    schedule = solve_job_shop(OptimizeRequest(jobs=jobs))
-
-    simulation_result = simulate_schedule(
-        SimulateRequest(
-            schedule=schedule,
-            config=SimulationConfig(seed=seed),
-        )
-    )
-
-    return {
-        "schedule": schedule,
-        "simulation": simulation_result,
-    }
+    return run_pipeline(default_jobs(), SimulationConfig(seed=seed))
