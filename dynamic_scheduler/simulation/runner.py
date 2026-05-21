@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import simpy
 
 from exceptions import SchedulingInfeasibleError, SchedulingTimeoutNoSolution
-from models import (
+from models_base import (
     AlertEvent,
     AlertLevel,
     DeviceState,
@@ -22,7 +22,11 @@ from models import (
 from strategic import StrategicScheduler
 from tactical import TacticalDispatcher
 from simulation.registry import SimRegistry
-from simulation.fault_injector import FaultInjector
+from simulation.disturbance import (
+    DisturbanceConfig,
+    DisturbanceManager,
+    DowntimeMap,
+)
 from simulation.metrics import SimMetrics
 
 logger = logging.getLogger("SimRunner")
@@ -69,18 +73,12 @@ class SimRunner:
     def __init__(
         self,
         request: ScheduleRequest,
-        duration_jitter_std: float = 0.1,  # 执行时长抖动（相对标准差）
-        mean_mttf_ms: float = 5_000,  # 平均故障间隔（ms）
-        mean_mttr_ms: float = 1_000,  # 平均修复时间（ms）
-        fault_prob: float = 0.8,  # 故障触发概率
+        disturbance_config: Optional[DisturbanceConfig] = None,
         reschedule_interval: float = 3_000,  # 定时重规划间隔（ms）
         rng_seed: Optional[int] = 42,
     ) -> None:
         self._request = request
-        self._jitter_std = duration_jitter_std
-        self._mean_mttf_ms = mean_mttf_ms
-        self._mean_mttr_ms = mean_mttr_ms
-        self._fault_prob = fault_prob
+        self._dist_config = disturbance_config or DisturbanceConfig()
         self._reschedule_interval = reschedule_interval
 
         # 随机数生成器
@@ -112,17 +110,21 @@ class SimRunner:
         # 战术层重规划信号 → SimPy 事件
         self._strategic.register_reschedule_signal(self._on_reschedule_signal)
 
-        # 故障注入器
-        self._fault_injector = FaultInjector(
+        # ── DisturbanceManager（取代 FaultInjector，统一管理所有扰动）──
+        # machine_ids 从 resources 中解析，约定资源 id 格式：machine_{id}
+        self._machine_ids: List[int] = sorted(
+            {
+                int(res.id.split("_")[-1])
+                for res in request.resources
+                if "_" in res.id and res.id.split("_")[-1].isdigit()
+            }
+        )
+        self._disturbance = DisturbanceManager(
             env=self._env,
-            device_ids=self._registry.get_all_device_ids(),
-            mean_mttf_ms=mean_mttf_ms,
-            mean_mttr_ms=mean_mttr_ms,
-            on_fault=self._on_device_fault,
-            on_recover=self._on_device_recover,
+            config=self._dist_config,
+            machine_ids=self._machine_ids,
+            rng=self._rng,
             alert_handler=self._handle_alert,
-            fault_prob=fault_prob,
-            rng_seed=rng_seed,
         )
 
         # 前置依赖完成事件：task_id -> simpy.Event
@@ -134,13 +136,9 @@ class SimRunner:
         self._reschedule_event = self._env.event()
 
         logger.info(
-            "[SimRunner] 初始化完成：任务数=%d，设备数=%d，"
-            "jitter=%.2f，mttf=%.0f ms，mttr=%.0f ms",
+            "[SimRunner] 初始化完成：任务数=%d，设备数=%d，",
             len(request.tasks),
             len(self._registry.get_all_device_ids()),
-            duration_jitter_std,
-            mean_mttf_ms,
-            mean_mttr_ms,
         )
 
     # ─────────────────────────────────────────
@@ -159,6 +157,9 @@ class SimRunner:
         -------
         SimMetrics : 仿真过程中采集的所有指标
         """
+        # ── 预生成故障窗口（FaultInjector 职责移交）───
+        self._disturbance.generate_downtime_map()
+
         # 1. 初始战略规划
         logger.info("═══ 初始战略规划 ═══")
         try:
@@ -170,9 +171,9 @@ class SimRunner:
             self._metrics.record_reschedule(elapsed_ms)
 
             logger.info(
-                "初始计划完成：status=%s，makespan=%d ms，耗时=%.1f ms",
+                "初始计划完成：status=%s，makespan=%.2fh，耗时=%.1f ms",
                 initial_result.status,
-                initial_result.makespan_ms,
+                initial_result.makespan_ms / 3_600_000,
                 elapsed_ms,
             )
         except SchedulingInfeasibleError as e:
@@ -186,40 +187,40 @@ class SimRunner:
         for task in self._request.tasks:
             self._env.process(self._task_process(task))
 
-        # 3. 启动定时重规划进程
-        self._env.process(self._periodic_reschedule_process())
+        # 3. 启动故障监控进程
+        self._env.process(self._fault_monitor_process())
 
-        # 4. 启动重规划响应进程
+        # 4. 定时 + 事件驱动重规划
+        self._env.process(self._periodic_reschedule_process())
         self._env.process(self._reschedule_response_process())
 
         # 5. 运行仿真
         end_time = until or float(self._request.horizon_ms * 2)
-        logger.info("═══ 仿真开始（until=%.0f ms）═══", end_time)
+        logger.info("═══ 仿真开始（until=%.2fh）═══", end_time / 3_600_000)
         self._env.run(until=end_time)
 
         # 6. 补充 makespan
         if self._metrics.completion_times:
             self._metrics.makespan_ms = max(self._metrics.completion_times.values())
 
-        logger.info(self._metrics.report())
+        logger.debug("仿真结束，指标已就绪")
         return self._metrics
 
     # ─────────────────────────────────────────
-    # SimPy 进程：单任务执行
+    # SimPy 进程：单任务执行（含随机扰动）
     # ─────────────────────────────────────────
     def _task_process(self, task: Task):
         """
         单任务完整生命周期：
 
-        earliest_start 等待
-            → 前置依赖等待
-            → 战术层申请设备
-            → 等待实际开始时刻
-            → 占用 SimPy 资源（互斥）
-            → 执行（加入正态时长抖动）
-            → 释放资源
-            → 完成回调
-            → 触发后继任务依赖事件
+        扰动注入点（均通过 DisturbanceManager）
+        ────────────────────────────────────
+        A. 初始释放延迟   sample_release_delay()
+        B. 准备/换型延迟  sample_setup_delay()
+                         + machine_work_with_faults()（含故障中断）
+        C. 加工时长波动   sample_process_factor()
+                         + machine_work_with_faults()（含故障中断）
+        D. 工序间搬运延迟 sample_transfer_delay()
         """
         # ── 1. 等待 earliest_start_ms ────────────────────────
         if task.earliest_start_ms > self._env.now:
@@ -235,14 +236,26 @@ class SimRunner:
         for pred_id in preds:
             yield self._done_events[pred_id]
 
+        # ── A. 初始释放延迟 ───────────────────────────────────
+        release_delay_h = self._disturbance.sample_release_delay()
+        if release_delay_h > 0:
+            release_ms = int(release_delay_h * 3_600_000)
+            logger.info(
+                "[T=%6.2fh] 任务 %s 初始释放延迟 %.2fh",
+                self._env.now / 3_600_000,
+                task.id,
+                release_delay_h,
+            )
+            yield self._env.timeout(release_ms)
+
         # ── 3. 向战术层申请设备 ───────────────────────────────
         device_id = self._tactical.on_task_ready(task).device_id
         actual_start_ms = self._tactical.on_task_ready(task).actual_start_ms
 
         if device_id == "UNASSIGNED":
             logger.error(
-                "[T=%6d] 任务 %s 无法分配设备，标记跳过",
-                self._env.now,
+                "[T=%6.2fh] 任务 %s 无法分配设备，标记跳过",
+                self._env.now / 3_600_000,
                 task.id,
             )
             # 触发后继事件，避免后继任务永久阻塞
@@ -270,23 +283,47 @@ class SimRunner:
             current_task=task.id,
         )
 
-        # ── 6. 执行任务（加入随机时长抖动）───────────────────
-        jitter = self._rng.gauss(1.0, self._jitter_std)
-        jitter = max(0.5, min(jitter, 2.0))  # 限制在 [0.5x, 2.0x]
-        actual_duration = max(1, int(task.duration_ms * jitter))
+        # ── B. 准备/换型延迟（含故障中断）───────────────────
+        setup_delay_h = self._disturbance.sample_setup_delay()
+        if setup_delay_h > 0:
+            logger.info(
+                "[T=%6.2fh] 任务 %s 准备/换型 %.2fh",
+                self._env.now / 3_600_000,
+                task.id,
+                setup_delay_h,
+            )
+            yield self._env.process(
+                self._disturbance.machine_work_with_faults(
+                    machine_id=device_id,
+                    busy_time=setup_delay_h,
+                    label=f"任务{task.id}/准备",
+                    verbose=False,
+                )
+            )
+
+        # ── C. 加工（时长波动 + 故障中断）───────────────────
+        process_factor = self._disturbance.sample_process_factor()
+        planned_duration_h = task.duration_ms / 3_600_000
+        actual_duration_h = planned_duration_h * process_factor
 
         logger.info(
-            "[T=%6d] 任务 %-4s 开始：设备=%-8s 计划时长=%4d ms  "
-            "实际时长=%4d ms（jitter=%.2f）",
-            self._env.now,
+            "[T=%6.2fh] 任务 %-10s 开始：设备=%-10s " "计划=%.2fh 系数=%.3f 实际=%.2fh",
+            self._env.now / 3_600_000,
             task.id,
             device_id,
-            task.duration_ms,
-            actual_duration,
-            jitter,
+            planned_duration_h,
+            process_factor,
+            actual_duration_h,
         )
 
-        yield self._env.timeout(actual_duration)
+        yield self._env.process(
+            self._disturbance.machine_work_with_faults(
+                machine_id=device_id,
+                busy_time=actual_duration_h,
+                label=f"任务{task.id}/加工",
+                verbose=False,
+            )
+        )
 
         # ── 7. 释放资源 ───────────────────────────────────────
         sim_resource.release(req)
@@ -299,6 +336,17 @@ class SimRunner:
             available_at=actual_end,
             current_task=None,
         )
+
+        # ── D. 工序间搬运延迟 ────────────────────────────────
+        transfer_delay_h = self._disturbance.sample_transfer_delay()
+        if transfer_delay_h > 0:
+            logger.info(
+                "[T=%6.2fh] 任务 %s 工序间搬运 %.2fh",
+                self._env.now / 3_600_000,
+                task.id,
+                transfer_delay_h,
+            )
+            yield self._env.timeout(int(transfer_delay_h * 3_600_000))
 
         # ── 8. 战术层完成回调 ─────────────────────────────────
         self._tactical.on_task_completed(task.id, actual_end)
@@ -313,17 +361,92 @@ class SimRunner:
         self._metrics.record_completion(task.id, actual_end, drift_ms)
 
         logger.info(
-            "[T=%6d] 任务 %-4s 完成：设备=%-8s 实际结束=%4d ms  偏差=%4d ms",
-            self._env.now,
+            "[T=%6.2fh] 任务 %-10s 完成：设备=%-10s " "实际结束=%.2fh 偏差=%.2fh",
+            self._env.now / 3_600_000,
             task.id,
             device_id,
-            actual_end,
-            drift_ms,
+            actual_end / 3_600_000,
+            drift_ms / 3_600_000,
         )
 
         # ── 10. 触发后继任务的依赖事件 ─────────────────────────
         if not self._done_events[task.id].triggered:
             self._done_events[task.id].succeed()
+
+    # ─────────────────────────────────────────
+    # 故障监控进程
+    # ─────────────────────────────────────────
+    def _fault_monitor_process(self):
+        """
+        将 DisturbanceManager 预生成的故障窗口转换为 SimPy 时序事件，
+        在正确时刻通知战术层。
+
+        原 FaultInjector 的职责
+        ────────────────────────────────────────────────
+        原 FaultInjector  →  DisturbanceManager（扰动采样 + 故障窗口）
+                          +  _fault_monitor_process（SimPy 时序注入）
+        """
+        # 将所有机器的故障窗口展开为 (时刻_ms, 类型, device_id) 列表
+        fault_events: List[tuple] = []
+        for machine_id, windows in self._disturbance.downtime_map.items():
+            device_id = f"machine_{machine_id}"
+            for fault_start_h, fault_end_h in windows:
+                fault_events.append(
+                    (
+                        int(fault_start_h * 3_600_000),
+                        "FAULT",
+                        device_id,
+                    )
+                )
+                fault_events.append(
+                    (
+                        int(fault_end_h * 3_600_000),
+                        "RECOVER",
+                        device_id,
+                    )
+                )
+
+        # 按时刻升序处理
+        for event_time_ms, event_type, device_id in sorted(
+            fault_events, key=lambda x: x[0]
+        ):
+            # ── 所有任务已完成，故障监控无需继续 ────────────────
+            if len(self._metrics.completion_times) >= self._metrics.total_tasks:
+                logger.info(
+                    "[T=%6.2fh] 所有任务已完成，停止故障监控",
+                    self._env.now / 3_600_000,
+                )
+                return
+
+            now_ms = int(self._env.now)
+            if event_time_ms > now_ms:
+                yield self._env.timeout(event_time_ms - now_ms)
+
+            # ── timeout 等待期间任务可能已全部完成，再次检查 ────
+            if len(self._metrics.completion_times) >= self._metrics.total_tasks:
+                logger.info(
+                    "[T=%6.2fh] 所有任务已完成，停止故障监控",
+                    self._env.now / 3_600_000,
+                )
+                return
+
+            if event_type == "FAULT":
+                logger.warning(
+                    "[T=%6.2fh] 故障注入：%s",
+                    self._env.now / 3_600_000,
+                    device_id,
+                )
+                self._metrics.record_fault()
+                self._tactical.on_device_fault(device_id)
+
+            else:
+                logger.info(
+                    "[T=%6.2fh] 故障恢复：%s",
+                    self._env.now / 3_600_000,
+                    device_id,
+                )
+                self._metrics.record_recovery()
+                self._tactical.on_device_recovered(device_id)
 
     # ─────────────────────────────────────────
     # SimPy 进程：定时重规划
@@ -341,12 +464,12 @@ class SimRunner:
             remaining = [t for t in self._request.tasks if t.id not in completed]
             if not remaining:
                 logger.info(
-                    "[T=%6d] 所有任务已完成，停止定时重规划",
-                    self._env.now,
+                    "[T=%6.2fh] 所有任务已完成，停止定时重规划",
+                    self._env.now / 3_600_000,
                 )
                 return
 
-            logger.info("[T=%6d] 定时重规划触发", self._env.now)
+            logger.info("[T=%6.2fh] 定时重规划触发", self._env.now / 3_600_000)
             self._do_reschedule(reason="定时触发")
 
     # ─────────────────────────────────────────
@@ -366,8 +489,8 @@ class SimRunner:
             if request_info:
                 reason, affected = request_info
                 logger.info(
-                    "[T=%6d] 响应重规划请求：%s（受影响任务=%s）",
-                    self._env.now,
+                    "[T=%6.2fh] 响应重规划请求：%s（受影响任务=%s）",
+                    self._env.now / 3_600_000,
                     reason,
                     affected,
                 )
@@ -394,14 +517,14 @@ class SimRunner:
         now = int(self._env.now)
         t0 = time.perf_counter()
 
-        logger.info("[T=%6d] 开始重规划（原因：%s）", now, reason)
+        logger.info("[T=%6.2fh] 开始重规划（原因：%s）", now / 3_600_000, reason)
 
         # ── 1. 过滤已完成任务 ─────────────────────────────────
         completed = self._tactical._completed_tasks  # Set[str]
         remaining_tasks = [t for t in self._request.tasks if t.id not in completed]
 
         if not remaining_tasks:
-            logger.info("[T=%6d] 所有任务已完成，跳过重规划", now)
+            logger.info("[T=%6.2fh] 所有任务已完成，跳过重规划", now / 3_600_000)
             return
 
         # ── 2. 调整各任务的 earliest_start_ms ────────────────
@@ -429,8 +552,8 @@ class SimRunner:
 
         if not available_resources:
             logger.error(
-                "[T=%6d] 无可用资源，跳过重规划",
-                now,
+                "[T=%6.2fh] 无可用资源，跳过重规划",
+                now / 3_600_000,
             )
             self._emit_alert(
                 AlertEvent(
@@ -472,15 +595,15 @@ class SimRunner:
             self._metrics.record_reschedule(elapsed_ms)
 
             logger.info(
-                "[T=%6d] 重规划完成：status=%-10s makespan=%4d ms  耗时=%.1f ms",
-                now,
+                "[T=%6.2fh] 重规划完成：status=%-10s makespan=%.2fh 耗时=%.2fh",
+                now / 3_600_000,
                 result.status,
-                result.makespan_ms,
-                elapsed_ms,
+                result.makespan_ms / 3_600_000,
+                elapsed_ms / 3_600_000,
             )
 
         except SchedulingInfeasibleError as e:
-            logger.error("[T=%6d] 重规划失败（约束冲突）：%s", now, e)
+            logger.error("[T=%6.2fh] 重规划失败（约束冲突）：%s", now / 3_600_000, e)
             self._emit_alert(
                 AlertEvent(
                     level=AlertLevel.CRITICAL,
@@ -490,7 +613,7 @@ class SimRunner:
             )
 
         except SchedulingTimeoutNoSolution as e:
-            logger.error("[T=%6d] 重规划失败（超时无解）：%s", now, e)
+            logger.error("[T=%6.2fh] 重规划失败（超时无解）：%s", now / 3_600_000, e)
             self._emit_alert(
                 AlertEvent(
                     level=AlertLevel.CRITICAL,
@@ -499,19 +622,19 @@ class SimRunner:
                 )
             )
 
-    # ═════════════════════════════════════════
+    # ─────────────────────────────────────────
     # 层间回调
-    # ═════════════════════════════════════════
+    # ─────────────────────────────────────────
     def _on_plan_updated(self, result: ScheduleResult) -> None:
         """
         战略层每次 solve() 成功后唯一触发点。
         负责将新计划同步到战术层。
         """
         logger.info(
-            "[T=%6d] 计划已更新：status=%-10s makespan=%4d ms  任务数=%d",
-            self._env.now,
+            "[T=%6.2fh] 计划已更新：status=%-10s makespan=%.2fh 任务数=%d",
+            self._env.now / 3_600_000,
             result.status,
-            result.makespan_ms,
+            result.makespan_ms / 3_600_000,
             len(result.assignments),
         )
         # 同步到战术层（只执行一次，由 register_plan_callback 防重保证）
@@ -527,8 +650,8 @@ class SimRunner:
         将业务信号转换为 SimPy 事件，唤醒 _reschedule_response_process。
         """
         logger.warning(
-            "[T=%6d] 重规划信号：%s（受影响任务=%s）",
-            self._env.now,
+            "[T=%6.2fh] 重规划信号：%s（受影响任务=%s）",
+            self._env.now / 3_600_000,
             reason,
             affected_task_ids,
         )
@@ -536,32 +659,9 @@ class SimRunner:
         if not self._reschedule_event.triggered:
             self._reschedule_event.succeed()
 
-    # ═════════════════════════════════════════
-    # 故障 / 恢复回调（FaultInjector → 战术层）
-    # ═════════════════════════════════════════
-    def _on_device_fault(self, device_id: str) -> None:
-        """FaultInjector 触发故障时调用"""
-        logger.warning(
-            "[T=%6d] 设备故障事件：%s",
-            self._env.now,
-            device_id,
-        )
-        self._metrics.record_fault()
-        self._tactical.on_device_fault(device_id)
-
-    def _on_device_recover(self, device_id: str) -> None:
-        """FaultInjector 触发恢复时调用"""
-        logger.info(
-            "[T=%6d] 设备恢复事件：%s",
-            self._env.now,
-            device_id,
-        )
-        self._metrics.record_recovery()
-        self._tactical.on_device_recovered(device_id)
-
-    # ═════════════════════════════════════════
+    # ─────────────────────────────────────────
     # 告警处理
-    # ═════════════════════════════════════════
+    # ─────────────────────────────────────────
     def _handle_alert(self, event: AlertEvent) -> None:
         fn = {
             AlertLevel.INFO: logger.info,
@@ -569,9 +669,9 @@ class SimRunner:
             AlertLevel.CRITICAL: logger.critical,
         }[event.level]
         fn(
-            "[Alert][%-8s][T=%6d] %s",
+            "[Alert][%-8s][T=%6.2fh] %s",
             event.level.value,
-            self._env.now,
+            self._env.now / 3_600_000,
             event.message,
         )
 

@@ -79,9 +79,9 @@ class SimMetrics:
             f"  设备恢复次数       : {self.recovery_count}",
             f"  触发重规划次数     : {self.reschedule_count}",
             f"  平均重规划耗时     : {self.avg_reschedule_latency_ms:.1f} ms",
-            f"  总 Makespan        : {self.makespan_ms} ms",
-            f"  平均完成偏差       : {self.avg_drift_ms:.1f} ms",
-            f"  最大完成偏差       : {self.max_drift_ms} ms",
+            f"  总 Makespan        : {self.makespan_ms / 3_600_000:.2f} h",
+            f"  平均完成偏差       : {self.avg_drift_ms / 3_600_000:.2f} h",
+            f"  最大完成偏差       : {self.max_drift_ms / 3_600_000:.2f} h",
             f"{'═'*55}",
         ]
         return "\n".join(lines)

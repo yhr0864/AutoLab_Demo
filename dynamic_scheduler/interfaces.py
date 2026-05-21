@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, List
 
-from models import DeviceStatus, PlannedWindow
+from models_base import DeviceStatus, PlannedWindow
 
 
 class IStrategicScheduler(ABC):

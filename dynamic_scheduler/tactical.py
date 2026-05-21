@@ -39,7 +39,7 @@ from interfaces import IStrategicScheduler, IDeviceRegistry
 
 logger = logging.getLogger("TacticalDispatcher")
 
-from models import (
+from models_base import (
     Task,
     TaskState,
     AlertLevel,
@@ -214,12 +214,12 @@ class TacticalDispatcher:
                 self._check_and_request_reschedule(task.id, drift, "start")
 
             logger.info(
-                "任务 %s 已分配：设备=%s，实际开始=%d ms（计划=%d，弹性上限=%d）",
+                "任务 %s 已分配：设备=%s，实际开始=%.2fh（计划=%.2fh，弹性上限=%.2fh）",
                 task.id,
                 record.device_id,
-                record.actual_start_ms,
-                window.planned_start_ms,
-                window.latest_start_ms,
+                record.actual_start_ms / 3_600_000,
+                window.planned_start_ms / 3_600_000,
+                window.latest_start_ms / 3_600_000,
             )
             return record
 
@@ -245,11 +245,11 @@ class TacticalDispatcher:
 
             drift = record.end_drift_ms
             logger.info(
-                "任务 %s 完成：实际结束=%d ms，计划结束=%d ms，偏差=%d ms",
+                "任务 %s 完成：实际结束=%.2fh，计划结束=%.2fh，偏差=%.2fh",
                 task_id,
-                actual_end_ms,
-                record.planned_end_ms,
-                drift,
+                actual_end_ms / 3_600_000,
+                record.planned_end_ms / 3_600_000,
+                drift / 3_600_000,
             )
 
             self._check_and_request_reschedule(task_id, drift, "end")
@@ -454,8 +454,8 @@ class TacticalDispatcher:
         if drift_ms > self.DRIFT_THRESHOLD_MS:
             self._request_reschedule(
                 reason=(
-                    f"任务 {task_id} {drift_type} 偏差 {drift_ms} ms "
-                    f"超过阈值 {self.DRIFT_THRESHOLD_MS} ms"
+                    f"任务 {task_id} {drift_type} 偏差 {drift_ms / 3_600_000:.2f} h "
+                    f"超过阈值 {self.DRIFT_THRESHOLD_MS / 3_600_000:.2f} h"
                 ),
                 affected=[task_id],
                 level=AlertLevel.WARNING,

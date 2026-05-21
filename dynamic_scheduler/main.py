@@ -37,131 +37,144 @@ from __future__ import annotations
 import argparse
 import logging
 
-from models import (
+from models_base import (
     Resource,
     ScheduleRequest,
     Task,
 )
 from simulation.runner import SimRunner
+from simulation.disturbance import DisturbanceConfig
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("main")
 
 
-# ─────────────────────────────────────────────
-# 场景构建
-# ─────────────────────────────────────────────
-def build_jsp_request() -> ScheduleRequest:
-    """
-    将经典 Job-Shop 问题转换为 ScheduleRequest。
+def main() -> None:
 
-    jobs_data 格式：
-        每行  = 一个 Job（工件）
-        元素  = (machine_id, duration_ms)，表示一道工序
-        工序必须按顺序执行（工件内 precedence）
-    """
-    jobs_data = [
-        [(0, 30), (1, 20), (2, 20)],  # Job 0
-        [(0, 20), (2, 10), (1, 40)],  # Job 1
-        [(1, 40), (2, 30)],  # Job 2
-    ]
+    # ── 扰动配置 ──────────────────────────────────────────────
+    config = DisturbanceConfig(
+        machine_mtbf={0: 12.0, 1: 10.0, 2: 11.0},
+        simulation_horizon=30.0,
+        fault_prob=0.8,
+        process_factor_low=0.90,
+        process_factor_high=1.25,
+        process_factor_mode=1.03,
+        setup_no_delay_prob=0.80,
+        setup_delay_low=0.05,
+        setup_delay_high=0.30,
+        release_no_delay_prob=0.85,
+        release_delay_low=0.10,
+        release_delay_high=0.50,
+    )
 
-    tasks: list[Task] = []
-    precedence_pairs: list[tuple[str, str]] = []
-    tid = 0
-
-    for job_idx, operations in enumerate(jobs_data):
-        prev_id: str | None = None
-        for machine_id, duration in operations:
-            task_id = str(tid)
-            tid += 1
-            tasks.append(
-                Task(
-                    id=task_id,
-                    duration_ms=duration,
-                    required_capability=f"machine_{machine_id}",
-                    earliest_start_ms=0,
-                    deadline_ms=None,
-                )
-            )
-            if prev_id is not None:
-                precedence_pairs.append((prev_id, task_id))
-            prev_id = task_id
-
+    # ── 资源定义（machine_id 需与 DisturbanceConfig.machine_mtbf 对齐）
     resources = [
-        Resource(id=f"res_m{i}", capability=f"machine_{i}", capacity=1)
-        for i in range(3)
+        Resource(id="machine_0", capability="milling", capacity=1),
+        Resource(id="machine_1", capability="drilling", capacity=1),
+        Resource(id="machine_2", capability="grinding", capacity=1),
     ]
 
-    return ScheduleRequest(
+    # ── 任务定义（对应 Job-Shop 默认排程）────────────────────
+    #
+    # job0: op0(machine_0, 3h) → op1(machine_1, 2h) → op2(machine_2, 2h)
+    # job1: op0(machine_0, 2h) → op1(machine_2, 1h) → op2(machine_1, 4h)
+    # job2: op0(machine_1, 4h) → op1(machine_2, 3h)
+    #
+    # 时间单位统一为 ms（1h = 3_600_000 ms）
+    H = 3_600_000  # 小时 → ms
+
+    tasks = [
+        # job0
+        Task(
+            id="j0_op0",
+            duration_ms=3 * H,
+            required_capability="milling",
+            earliest_start_ms=2 * H,
+            deadline_ms=None,
+        ),
+        Task(
+            id="j0_op1",
+            duration_ms=2 * H,
+            required_capability="drilling",
+            earliest_start_ms=5 * H,
+            deadline_ms=None,
+        ),
+        Task(
+            id="j0_op2",
+            duration_ms=2 * H,
+            required_capability="grinding",
+            earliest_start_ms=7 * H,
+            deadline_ms=None,
+        ),
+        # job1
+        Task(
+            id="j1_op0",
+            duration_ms=2 * H,
+            required_capability="milling",
+            earliest_start_ms=0,
+            deadline_ms=None,
+        ),
+        Task(
+            id="j1_op1",
+            duration_ms=1 * H,
+            required_capability="grinding",
+            earliest_start_ms=2 * H,
+            deadline_ms=None,
+        ),
+        Task(
+            id="j1_op2",
+            duration_ms=4 * H,
+            required_capability="drilling",
+            earliest_start_ms=7 * H,
+            deadline_ms=None,
+        ),
+        # job2
+        Task(
+            id="j2_op0",
+            duration_ms=4 * H,
+            required_capability="drilling",
+            earliest_start_ms=0,
+            deadline_ms=None,
+        ),
+        Task(
+            id="j2_op1",
+            duration_ms=3 * H,
+            required_capability="grinding",
+            earliest_start_ms=4 * H,
+            deadline_ms=None,
+        ),
+    ]
+
+    # ── 工序依赖（同一工件内严格顺序）───────────────────────
+    precedence_pairs = [
+        ("j0_op0", "j0_op1"),
+        ("j0_op1", "j0_op2"),
+        ("j1_op0", "j1_op1"),
+        ("j1_op1", "j1_op2"),
+        ("j2_op0", "j2_op1"),
+    ]
+
+    # ── 调度请求 ──────────────────────────────────────────────
+    request = ScheduleRequest(
         tasks=tasks,
         precedence_pairs=precedence_pairs,
         resources=resources,
-        horizon_ms=1800,  # 给出充足余量
-        priority_weights=None,
+        horizon_ms=11 * H,
+        priority_weights={"makespan": 1.0},
     )
 
-
-# ─────────────────────────────────────────────
-# CLI 参数
-# ─────────────────────────────────────────────
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="双层调度器 SimPy 仿真")
-    p.add_argument("--jitter", type=float, default=0.10, help="时长抖动标准差")
-    p.add_argument("--mttf", type=float, default=5000, help="平均故障间隔 ms")
-    p.add_argument("--mttr", type=float, default=1000, help="平均修复时间 ms")
-    p.add_argument("--fault-prob", type=float, default=0.80, help="故障触发概率")
-    p.add_argument("--interval", type=float, default=3000, help="定时重规划间隔 ms")
-    p.add_argument("--seed", type=int, default=42, help="随机种子")
-    p.add_argument("--until", type=float, default=None, help="仿真截止时刻 ms")
-    p.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-    )
-    return p.parse_args()
-
-
-# ─────────────────────────────────────────────
-# 主函数
-# ─────────────────────────────────────────────
-def main() -> None:
-    args = parse_args()
-
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
-
-    request = build_jsp_request()
-
-    logger.info(
-        "仿真参数：jitter=%.2f，mttf=%.0f ms，mttr=%.0f ms，"
-        "fault_prob=%.2f，reschedule_interval=%.0f ms，seed=%d",
-        args.jitter,
-        args.mttf,
-        args.mttr,
-        args.fault_prob,
-        args.interval,
-        args.seed,
-    )
-
-    runner = SimRunner(
+    # ── 单次仿真 ──────────────────────────────────────────────
+    sim = SimRunner(
         request=request,
-        duration_jitter_std=args.jitter,
-        mean_mttf_ms=args.mttf,
-        mean_mttr_ms=args.mttr,
-        fault_prob=args.fault_prob,
-        reschedule_interval=args.interval,
-        rng_seed=args.seed,
+        disturbance_config=config,
+        reschedule_interval=3_600_000,  # 每小时触发一次定时重规划
+        rng_seed=42,
     )
-
-    metrics = runner.run(until=args.until)
-
-    # 最终报告已在 runner.run() 内部打印
-    # 此处可选：写入文件 / 上报监控系统
-    _ = metrics
+    metrics = sim.run(until=22 * H)  # 给予 2 倍理论工期余量
+    print(metrics.report())
 
 
 if __name__ == "__main__":

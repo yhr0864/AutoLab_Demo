@@ -23,7 +23,13 @@ import logging
 from typing import Dict, List, Optional, Tuple, Callable
 from ortools.sat.python import cp_model
 
-from models import Task, DispatchRecord, ScheduleResult, ScheduleRequest, PlannedWindow
+from models_base import (
+    Task,
+    DispatchRecord,
+    ScheduleResult,
+    ScheduleRequest,
+    PlannedWindow,
+)
 from interfaces import IStrategicScheduler
 from exceptions import SchedulingInfeasibleError, SchedulingTimeoutNoSolution
 
@@ -122,7 +128,7 @@ class StrategicScheduler(IStrategicScheduler):
         return {
             a.task_id: PlannedWindow(
                 task_id=a.task_id,
-                resource_id=a.resource_id,
+                resource_id=a.device_id,
                 planned_start_ms=a.planned_start_ms,
                 planned_end_ms=a.planned_end_ms,
                 window_slack_ms=a.window_slack_ms,

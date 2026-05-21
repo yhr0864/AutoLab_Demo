@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 
 from interfaces import IDeviceRegistry
-from models import (
+from models_base import (
     DeviceState,
     DeviceStatus,
     Resource,
@@ -84,18 +84,18 @@ class SimRegistry(IDeviceRegistry):
     def mark_faulted(self, device_id: str) -> None:
         self._status[device_id].state = DeviceState.FAULTED
         logger.warning(
-            "设备 %s 标记为故障（仿真时刻=%d ms）",
+            "设备 %s 标记为故障（仿真时刻=%.2fh ）",
             device_id,
-            self._env.now,
+            self._env.now / 3_600_000,
         )
 
     def mark_recovered(self, device_id: str) -> None:
         self._status[device_id].state = DeviceState.IDLE
         self._status[device_id].current_task_id = None
         logger.info(
-            "设备 %s 标记为恢复（仿真时刻=%d ms）",
+            "设备 %s 标记为恢复（仿真时刻=%.2fh ）",
             device_id,
-            self._env.now,
+            self._env.now / 3_600_000,
         )
 
     def update_status(
