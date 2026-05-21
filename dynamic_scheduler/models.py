@@ -1,165 +1,152 @@
-# 所有数据结构定义
-# ──────────────────────────────────────────────────────────────
-
+# 所有数据类 + 枚举
 from __future__ import annotations
+
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
 from enum import Enum, auto
+from typing import Dict, List, Optional, Tuple
 
-# ============================================================
+
+# ─────────────────────────────────────────────
 # 枚举
-# ============================================================
+# ─────────────────────────────────────────────
+class TaskState(Enum):
+    PENDING = auto()
+    READY = auto()
+    RUNNING = auto()
+    COMPLETED = auto()
+    FAILED = auto()
+    MIGRATED = auto()
 
 
-class TaskStatus(Enum):
-    PENDING = auto()  # 尚未下发，可自由重排
-    SCHEDULED = auto()  # 已下发待执行，原则上不动
-    RUNNING = auto()  # 设备正在执行，绝对不动
-    DONE = auto()  # 已完成
-    BLOCKED = auto()  # 依赖资源故障，暂时挂起
+class DeviceState(Enum):
+    IDLE = auto()
+    BUSY = auto()
+    FAULTED = auto()
 
 
-class EventType(Enum):
-    MACHINE_FAILURE = auto()
-    MACHINE_RECOVERY = auto()
-    TASK_COMPLETED = auto()
-    URGENT_TASK = auto()
+class AlertLevel(Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
 
 
-# ============================================================
-# 事件
-# ============================================================
+# ─────────────────────────────────────────────
+# 接口数据结构定义
+# ─────────────────────────────────────────────
+@dataclass
+class Task:
+    id: str
+    duration_ms: int
+    required_capability: str  # 如 "ThermalCyclingService"，只描述能力，不绑定物理设备
+    earliest_start_ms: int = 0
+    deadline_ms: Optional[int] = None
 
 
 @dataclass
-class Event:
-    """
-    动态事件。payload 约定：
-      MACHINE_FAILURE  : {"resource": str}
-      MACHINE_RECOVERY : {"resource": str}
-      TASK_COMPLETED   : {"task_name": str, "finish_time": float}
-      URGENT_TASK      : {"task": {name, duration, resources, predecessors}}
-    """
-
-    type: EventType
-    timestamp: float
-    payload: Dict[str, Any] = field(default_factory=dict)
-
-
-# ============================================================
-# 任务 / 资源状态
-# ============================================================
+class Resource:
+    id: str
+    capability: str
+    capacity: int = 1  # 通常为 1（互斥资源）
 
 
 @dataclass
-class TaskState:
-    """
-    单个任务的运行时状态。
-
-    Attributes
-    ----------
-    name             : 任务唯一标识
-    duration         : 持续时间（整数时间单位）
-    resource_demands : {资源名: 需求量}
-    predecessors     : 前序任务名列表
-    status           : 当前状态（见 TaskStatus）
-    start_time       : 实际/计划开始时间（绝对时间戳）
-    end_time         : 实际/计划结束时间
-    """
-
-    name: str
-    duration: int
-    resource_demands: Dict[str, int]
-    predecessors: List[str]
-    status: TaskStatus = TaskStatus.PENDING
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
+class ScheduleRequest:
+    tasks: List[Task]
+    # DAG 前置依赖：(A_id, B_id) 表示任务 A 必须在任务 B 开始前完成
+    precedence_pairs: List[Tuple[str, str]]
+    # 从能力注册表拉取的可用资源列表
+    resources: List[Resource]
+    # 规划时间窗口（ms），通常 30 分钟 = 1_800_000 ms
+    horizon_ms: int
+    # 任务优先级权重，紧急样本可设高值；None 时所有任务权重视为 1.0
+    priority_weights: Optional[Dict[str, float]] = None
 
 
+# ─────────────────────────────────────────────
+# 计划 / 分配
+# ─────────────────────────────────────────────
 @dataclass
-class ResourceState:
-    """
-    资源运行时状态。
+class PlannedWindow:
+    """战略层下发的单任务时间窗口"""
 
-    Attributes
-    ----------
-    name      : 资源唯一标识
-    capacity  : 总容量
-    available : 当前可用量（故障时置 0）
-    broken    : 是否故障
-    """
-
-    name: str
-    capacity: int
-    available: int
-    broken: bool = False
-
-
-# ============================================================
-# 系统快照
-# ============================================================
-
-
-@dataclass
-class SystemState:
-    """
-    某时刻的完整系统快照。
-    由协调器维护，规则层和战略层均只读访问（写操作通过协调器接口）。
-
-    Attributes
-    ----------
-    current_time     : 当前仿真/实际时间
-    tasks            : {任务名: TaskState}
-    resources        : {资源名: ResourceState}
-    current_schedule : 当前生效的时间表 {任务名: {start, end}}
-    """
-
-    current_time: float
-    tasks: Dict[str, TaskState]
-    resources: Dict[str, ResourceState]
-    current_schedule: Dict[str, Dict] = field(default_factory=dict)
-
-
-# ============================================================
-# 调度结果
-# ============================================================
-
-
-@dataclass
-class Assignment:
-    """单个任务的调度结果"""
-
-    task_name: str
-    start: float
-    end: float
+    task_id: str
+    resource_id: str
+    planned_start_ms: int
+    planned_end_ms: int
+    window_slack_ms: int
 
     @property
-    def duration(self) -> float:
-        return self.end - self.start
+    def latest_start_ms(self) -> int:
+        return self.planned_start_ms + self.window_slack_ms
 
-
-Schedule = Dict[str, Assignment]  # {task_name: Assignment}
-
-
-# ============================================================
-# CP-SAT 建模输入（由 parser 生成）
-# ============================================================
+    @property
+    def latest_end_ms(self) -> int:
+        return self.planned_end_ms + self.window_slack_ms
 
 
 @dataclass
-class TaskModel:
-    name: str
-    duration: int
-    resource_demands: Dict[str, int]
+class DispatchRecord:
+    """战术层的完整分配记录（含实际执行数据）"""
+
+    task_id: str
+    device_id: str  # 具体资源 ID（物理设备在此处才出现）
+    planned_start_ms: int
+    planned_end_ms: int
+    window_slack_ms: int
+    capability: str = None  # 冗余存储，避免迁移时反查
+    actual_start_ms: Optional[int] = None
+    actual_end_ms: Optional[int] = None
+    state: TaskState = TaskState.READY
+    migrate_count: int = 0
+
+    @property
+    def end_drift_ms(self) -> int:
+        if self.actual_end_ms is None:
+            return 0
+        return abs(self.actual_end_ms - self.planned_end_ms)
+
+    @property
+    def start_drift_ms(self) -> int:
+        if self.actual_start_ms is None:
+            return 0
+        return abs(self.actual_start_ms - self.planned_start_ms)
 
 
 @dataclass
-class RCPSPModel:
-    tasks: List[TaskModel]
-    precedences: List[tuple]  # [(pred, succ)]
-    resource_capacities: Dict[str, int]
-    horizon: int
-    task_map: Dict[str, TaskModel] = field(default_factory=dict)
-    successors: Dict[str, List[str]] = field(default_factory=dict)
-    predecessors: Dict[str, List[str]] = field(default_factory=dict)
-    resource_tasks: Dict[str, List[str]] = field(default_factory=dict)
+class ScheduleResult:
+    status: str  # OPTIMAL / FEASIBLE / CACHED / EMERGENCY
+    solve_time_ms: float  # 实际求解耗时，用于性能监控
+    assignments: List[DispatchRecord] = field(default_factory=list)
+    makespan_ms: int = 0
+
+
+# ─────────────────────────────────────────────
+# 设备运行时状态
+# ─────────────────────────────────────────────
+@dataclass
+class DeviceStatus:
+    id: str
+    capability: str
+    state: DeviceState = DeviceState.IDLE
+    available_at_ms: int = 0
+    current_task_id: Optional[str] = None
+
+    def is_idle(self) -> bool:
+        return self.state == DeviceState.IDLE
+
+    def is_faulted(self) -> bool:
+        return self.state == DeviceState.FAULTED
+
+
+# ─────────────────────────────────────────────
+# 告警事件
+# ─────────────────────────────────────────────
+@dataclass
+class AlertEvent:
+    level: AlertLevel
+    source: str
+    message: str
+    task_id: Optional[str] = None
+    device_id: Optional[str] = None
+    timestamp_ms: int = field(default_factory=lambda: int(time.time() * 1000))
