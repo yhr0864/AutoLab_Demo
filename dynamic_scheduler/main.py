@@ -22,14 +22,6 @@
   Job 1: machine_0(2ms) → machine_2(1ms) → machine_1(4ms)
   Job 2: machine_1(4ms) → machine_2(3ms)
 
-仿真参数（可通过 CLI 覆盖）：
-  --jitter      执行时长抖动标准差（默认 0.1）
-  --mttf        平均故障间隔 ms（默认 5000）
-  --mttr        平均修复时间 ms（默认 1000）
-  --fault-prob  故障触发概率（默认 0.8）
-  --interval    定时重规划间隔 ms（默认 3000）
-  --seed        随机种子（默认 42）
-  --until       仿真截止时刻 ms（默认 horizon×2）
 """
 
 from __future__ import annotations
@@ -92,21 +84,21 @@ def main() -> None:
             id="j0_op0",
             duration_ms=3 * H,
             required_capability="milling",
-            earliest_start_ms=2 * H,
+            earliest_start_ms=0,
             deadline_ms=None,
         ),
         Task(
             id="j0_op1",
             duration_ms=2 * H,
             required_capability="drilling",
-            earliest_start_ms=5 * H,
+            earliest_start_ms=0,
             deadline_ms=None,
         ),
         Task(
             id="j0_op2",
             duration_ms=2 * H,
             required_capability="grinding",
-            earliest_start_ms=7 * H,
+            earliest_start_ms=0,
             deadline_ms=None,
         ),
         # job1
@@ -121,14 +113,14 @@ def main() -> None:
             id="j1_op1",
             duration_ms=1 * H,
             required_capability="grinding",
-            earliest_start_ms=2 * H,
+            earliest_start_ms=0,
             deadline_ms=None,
         ),
         Task(
             id="j1_op2",
             duration_ms=4 * H,
             required_capability="drilling",
-            earliest_start_ms=7 * H,
+            earliest_start_ms=0,
             deadline_ms=None,
         ),
         # job2
@@ -143,7 +135,7 @@ def main() -> None:
             id="j2_op1",
             duration_ms=3 * H,
             required_capability="grinding",
-            earliest_start_ms=4 * H,
+            earliest_start_ms=0,
             deadline_ms=None,
         ),
     ]
@@ -171,7 +163,7 @@ def main() -> None:
         request=request,
         disturbance_config=config,
         reschedule_interval=3_600_000,  # 每小时触发一次定时重规划
-        rng_seed=42,
+        rng_seed=43,
     )
     metrics = sim.run(until=22 * H)  # 给予 2 倍理论工期余量
     print(metrics.report())

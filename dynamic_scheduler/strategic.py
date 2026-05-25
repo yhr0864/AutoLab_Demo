@@ -1,20 +1,22 @@
-#  超时场景决策树
-# ──────────────────────────────────────────────────────
-# solver.solve() 返回
-#     │
-#     ├─ OPTIMAL / FEASIBLE ──→ 正常返回 + 更新缓存 ✅
-#     │
-#     ├─ UNKNOWN（超时）
-#     │       │
-#     │       ├─ 有缓存 ──→ 返回 CACHED 解，零额外等待 ✅
-#     │       │
-#     │       └─ 无缓存 ──→ 应急松弛求解（0.2s 预算）
-#     │                   │
-#     │                   ├─ 成功 ──→ 返回 EMERGENCY 解 ✅
-#     │                   └─ 失败 ──→ 抛 SchedulingTimeoutNoSolution ✅
-#     │
-#     └─ INFEASIBLE ──→ 抛 SchedulingInfeasibleError ✅
-# ──────────────────────────────────────────────────────
+"""
+超时场景决策树
+──────────────────────────────────────────────────────
+solver.solve() 返回
+    │
+    ├─ OPTIMAL / FEASIBLE ──→ 正常返回 + 更新缓存 ✅
+    │
+    ├─ UNKNOWN（超时）
+    │       │
+    │       ├─ 有缓存 ──→ 返回 CACHED 解，零额外等待 ✅
+    │       │
+    │       └─ 无缓存 ──→ 应急松弛求解（0.2s 预算）
+    │                   │
+    │                   ├─ 成功 ──→ 返回 EMERGENCY 解 ✅
+    │                   └─ 失败 ──→ 抛 SchedulingTimeoutNoSolution ✅
+    │
+    └─ INFEASIBLE ──→ 抛 SchedulingInfeasibleError ✅
+──────────────────────────────────────────────────────
+"""
 
 from __future__ import annotations
 
@@ -212,11 +214,13 @@ class StrategicScheduler(IStrategicScheduler):
             len(request.resources),
             self.TIME_BUDGET_SECONDS * 1000,
         )
+
         t0 = self._now()
         status = solver.solve(model)
-        elapsed_ms = (self._now() - t0) * 1_000
+        elapsed_ms = self._now() - t0
+
         logger.info(
-            "主求解完成：status=%s，耗时=%.1f ms",
+            "主求解完成：status=%s，耗时=%.1fms",
             solver.status_name(status),
             elapsed_ms,
         )
@@ -333,10 +337,10 @@ class StrategicScheduler(IStrategicScheduler):
 
         t0 = self._now()
         status = solver.solve(model)
-        elapsed_ms = primary_elapsed_ms + (self._now() - t0) * 1_000
+        elapsed_ms = primary_elapsed_ms + self._now() - t0
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            logger.warning("应急松弛求解成功（总耗时=%.1f ms）", elapsed_ms)
+            logger.warning("应急松弛求解成功（总耗时=%d ms）", elapsed_ms)
             return self._extract_result(
                 solver,
                 task_vars,

@@ -184,22 +184,43 @@ class SimRunner:
             return self._metrics
 
         # 2. 启动各任务 SimPy 进程
-        for task in self._request.tasks:
-            self._env.process(self._task_process(task))
+        task_procs = [
+            self._env.process(self._task_process(task)) for task in self._request.tasks
+        ]
 
         # 3. 启动故障监控进程
-        self._env.process(self._fault_monitor_process())
+        fault_proc = self._env.process(self._fault_monitor_process())
 
         # 4. 定时 + 事件驱动重规划
-        self._env.process(self._periodic_reschedule_process())
-        self._env.process(self._reschedule_response_process())
+        replan_proc = self._env.process(self._periodic_reschedule_process())
+        response_proc = self._env.process(self._reschedule_response_process())
 
-        # 5. 运行仿真
+        # 5. 启动"所有任务完成后中断监控进程"的守护进程
+        def _watchdog():
+            yield simpy.AllOf(self._env, task_procs)
+
+            logger.info(
+                "[T=%6.2fh] 所有任务完成，停止监控进程",
+                self._env.now / 3_600_000,
+            )
+
+            for proc, name in [
+                (fault_proc, "故障监控"),
+                (replan_proc, "定时重规划"),
+                (response_proc, "事件驱动重规划"),
+            ]:
+                if proc.is_alive:
+                    proc.interrupt("all_done")
+                    logger.debug("已中断：%s", name)
+
+        self._env.process(_watchdog())
+
+        # 6. 运行仿真
         end_time = until or float(self._request.horizon_ms * 2)
         logger.info("═══ 仿真开始（until=%.2fh）═══", end_time / 3_600_000)
         self._env.run(until=end_time)
 
-        # 6. 补充 makespan
+        # 7. 补充 makespan
         if self._metrics.completion_times:
             self._metrics.makespan_ms = max(self._metrics.completion_times.values())
 
@@ -249,8 +270,10 @@ class SimRunner:
             yield self._env.timeout(release_ms)
 
         # ── 3. 向战术层申请设备 ───────────────────────────────
-        device_id = self._tactical.on_task_ready(task).device_id
-        actual_start_ms = self._tactical.on_task_ready(task).actual_start_ms
+        assignment = self._tactical.on_task_ready(task)
+        device_id = assignment.device_id
+        machine_id = int(device_id.split("_")[-1])
+        actual_start_ms = assignment.actual_start_ms
 
         if device_id == "UNASSIGNED":
             logger.error(
@@ -292,9 +315,10 @@ class SimRunner:
                 task.id,
                 setup_delay_h,
             )
+
             yield self._env.process(
                 self._disturbance.machine_work_with_faults(
-                    machine_id=device_id,
+                    machine_id=machine_id,
                     busy_time=setup_delay_h,
                     label=f"任务{task.id}/准备",
                     verbose=False,
@@ -318,7 +342,7 @@ class SimRunner:
 
         yield self._env.process(
             self._disturbance.machine_work_with_faults(
-                machine_id=device_id,
+                machine_id=machine_id,
                 busy_time=actual_duration_h,
                 label=f"任务{task.id}/加工",
                 verbose=False,
@@ -359,11 +383,13 @@ class SimRunner:
         drift_ms = abs(actual_end - planned_end)
 
         self._metrics.record_completion(task.id, actual_end, drift_ms)
-
         logger.info(
-            "[T=%6.2fh] 任务 %-10s 完成：设备=%-10s " "实际结束=%.2fh 偏差=%.2fh",
+            "[T=%6.2fh] 任务 %-10s(%d/%d) 完成：设备=%-10s "
+            "实际结束=%.2fh 偏差=%.2fh",
             self._env.now / 3_600_000,
             task.id,
+            len(self._metrics.completion_times),
+            self._metrics.total_tasks,
             device_id,
             actual_end / 3_600_000,
             drift_ms / 3_600_000,
@@ -392,61 +418,44 @@ class SimRunner:
             device_id = f"machine_{machine_id}"
             for fault_start_h, fault_end_h in windows:
                 fault_events.append(
-                    (
-                        int(fault_start_h * 3_600_000),
-                        "FAULT",
-                        device_id,
-                    )
+                    (int(fault_start_h * 3_600_000), "FAULT", device_id)
                 )
                 fault_events.append(
-                    (
-                        int(fault_end_h * 3_600_000),
-                        "RECOVER",
+                    (int(fault_end_h * 3_600_000), "RECOVER", device_id)
+                )
+
+        try:
+            # 按时刻升序处理
+            for event_time_ms, event_type, device_id in sorted(
+                fault_events, key=lambda x: x[0]
+            ):
+                now_ms = int(self._env.now)
+                if event_time_ms > now_ms:
+                    yield self._env.timeout(event_time_ms - now_ms)
+
+                if event_type == "FAULT":
+                    logger.warning(
+                        "[T=%6.2fh] 故障注入：%s",
+                        self._env.now / 3_600_000,
                         device_id,
                     )
-                )
+                    self._metrics.record_fault()
+                    self._tactical.on_device_fault(device_id)
 
-        # 按时刻升序处理
-        for event_time_ms, event_type, device_id in sorted(
-            fault_events, key=lambda x: x[0]
-        ):
-            # ── 所有任务已完成，故障监控无需继续 ────────────────
-            if len(self._metrics.completion_times) >= self._metrics.total_tasks:
-                logger.info(
-                    "[T=%6.2fh] 所有任务已完成，停止故障监控",
-                    self._env.now / 3_600_000,
-                )
-                return
+                else:
+                    logger.info(
+                        "[T=%6.2fh] 故障恢复：%s",
+                        self._env.now / 3_600_000,
+                        device_id,
+                    )
+                    self._metrics.record_recovery()
+                    self._tactical.on_device_recovered(device_id)
 
-            now_ms = int(self._env.now)
-            if event_time_ms > now_ms:
-                yield self._env.timeout(event_time_ms - now_ms)
-
-            # ── timeout 等待期间任务可能已全部完成，再次检查 ────
-            if len(self._metrics.completion_times) >= self._metrics.total_tasks:
-                logger.info(
-                    "[T=%6.2fh] 所有任务已完成，停止故障监控",
-                    self._env.now / 3_600_000,
-                )
-                return
-
-            if event_type == "FAULT":
-                logger.warning(
-                    "[T=%6.2fh] 故障注入：%s",
-                    self._env.now / 3_600_000,
-                    device_id,
-                )
-                self._metrics.record_fault()
-                self._tactical.on_device_fault(device_id)
-
-            else:
-                logger.info(
-                    "[T=%6.2fh] 故障恢复：%s",
-                    self._env.now / 3_600_000,
-                    device_id,
-                )
-                self._metrics.record_recovery()
-                self._tactical.on_device_recovered(device_id)
+        except simpy.Interrupt:
+            logger.info(
+                "[T=%6.2fh] 停止故障监控",
+                self._env.now / 3_600_000,
+            )
 
     # ─────────────────────────────────────────
     # SimPy 进程：定时重规划
@@ -456,21 +465,16 @@ class SimRunner:
         每隔 reschedule_interval ms 触发一次战略重规划。
         与事件驱动重规划互不干扰（_do_reschedule 内部有冷却保护）。
         """
-        while True:
-            yield self._env.timeout(self._reschedule_interval)
-
-            # 所有任务已完成，停止定时重规划
-            completed = self._tactical._completed_tasks
-            remaining = [t for t in self._request.tasks if t.id not in completed]
-            if not remaining:
-                logger.info(
-                    "[T=%6.2fh] 所有任务已完成，停止定时重规划",
-                    self._env.now / 3_600_000,
-                )
-                return
-
-            logger.info("[T=%6.2fh] 定时重规划触发", self._env.now / 3_600_000)
-            self._do_reschedule(reason="定时触发")
+        try:
+            while True:
+                yield self._env.timeout(self._reschedule_interval)
+                logger.info("[T=%6.2fh] 定时重规划触发", self._env.now / 3_600_000)
+                self._do_reschedule(reason="定时触发")
+        except simpy.Interrupt:
+            logger.info(
+                "[T=%6.2fh] 停止定时重规划",
+                self._env.now / 3_600_000,
+            )
 
     # ─────────────────────────────────────────
     # SimPy 进程：响应战术层的重规划请求
@@ -480,24 +484,16 @@ class SimRunner:
         监听战术层发出的重规划信号（_reschedule_event），立即响应。
         信号由 _on_reschedule_signal() 触发。
         """
-        while True:
-            # 等待战术层发出重规划信号
-            yield self._reschedule_event
-
-            # 消费请求（获取原因 + 受影响任务）
-            request_info = self._strategic.consume_reschedule_request()
-            if request_info:
-                reason, affected = request_info
-                logger.info(
-                    "[T=%6.2fh] 响应重规划请求：%s（受影响任务=%s）",
-                    self._env.now / 3_600_000,
-                    reason,
-                    affected,
-                )
-                self._do_reschedule(reason=reason)
-
-            # 重置 SimPy 事件，等待下一次触发
-            self._reschedule_event = self._env.event()
+        try:
+            while True:
+                yield self._reschedule_event
+                self._reschedule_event = self._env.event()
+                self._do_reschedule(reason="事件驱动")
+        except simpy.Interrupt:
+            logger.info(
+                "[T=%6.2fh] 停止事件驱动重规划",
+                self._env.now / 3_600_000,
+            )
 
     # ─────────────────────────────────────────
     # 核心：执行一次重规划
@@ -595,11 +591,11 @@ class SimRunner:
             self._metrics.record_reschedule(elapsed_ms)
 
             logger.info(
-                "[T=%6.2fh] 重规划完成：status=%-10s makespan=%.2fh 耗时=%.2fh",
+                "[T=%6.2fh] 重规划完成：status=%-10s makespan=%.2fh 耗时=%dms",
                 now / 3_600_000,
                 result.status,
                 result.makespan_ms / 3_600_000,
-                elapsed_ms / 3_600_000,
+                elapsed_ms,
             )
 
         except SchedulingInfeasibleError as e:

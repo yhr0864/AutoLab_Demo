@@ -263,64 +263,72 @@ class DisturbanceExecutor:
 
         用途：准备/换型时间 & 加工时间 均通过此方法执行。
         """
-        remaining = busy_time
+        remaining_h = busy_time
         windows = sorted(downtime_map.get(machine_id, []))
 
-        while remaining > 1e-9:
-            now = self._env.now
+        start_time_h = self._env.now / 3_600_000
+        logger.info(
+            "[%s] 开始工作：start=%.2fh, remaining_h=%.2fh",
+            label,
+            start_time_h,
+            remaining_h,
+        )
+
+        while remaining_h > 1e-9:
+            now_h = self._env.now / 3_600_000
 
             # ── 检查当前是否在故障窗口内 ──────────────────────
-            current = DisturbanceSampler.get_current_downtime(now, windows)
+            current = DisturbanceSampler.get_current_downtime(now_h, windows)
             if current is not None:
                 _, down_end = current
-                wait = down_end - now
+                wait = down_end - now_h
                 if verbose:
                     logger.warning(
                         "[T=%6.2fh] 机器%d 处于故障中，等待恢复至 %.2fh",
-                        now,
+                        now_h,
                         machine_id,
                         down_end,
                     )
-                yield self._env.timeout(wait)
+                yield self._env.timeout(wait * 3_600_000)
                 continue
 
             # ── 查找下一个故障窗口 ────────────────────────────
-            nxt = DisturbanceSampler.get_next_downtime(now, windows)
+            nxt = DisturbanceSampler.get_next_downtime(now_h, windows)
 
             if nxt is None:
                 # 后续无故障，直接完成剩余工作
-                yield self._env.timeout(remaining)
-                remaining = 0.0
+                yield self._env.timeout(remaining_h * 3_600_000)
+                remaining_h = 0.0
                 break
 
             down_start, down_end = nxt
-            time_until_fault = down_start - now
+            time_until_fault = down_start - now_h
 
-            if remaining <= time_until_fault:
+            if remaining_h <= time_until_fault:
                 # 剩余工作可在故障前完成
-                yield self._env.timeout(remaining)
-                remaining = 0.0
+                yield self._env.timeout(remaining_h * 3_600_000)
+                remaining_h = 0.0
             else:
                 # 先工作到故障发生
                 if time_until_fault > 1e-9:
-                    yield self._env.timeout(time_until_fault)
-                    remaining -= time_until_fault
+                    yield self._env.timeout(time_until_fault * 3_600_000)
+                    remaining_h -= time_until_fault
 
                 if verbose:
                     logger.warning(
                         "[T=%6.2fh] 机器%d 随机故障，预计 %.2fh 恢复，" "%s 剩余 %.2fh",
-                        self._env.now,
+                        self._env.now / 3_600_000,
                         machine_id,
                         down_end,
                         label,
-                        remaining,
+                        remaining_h,
                     )
                 self._alert(
                     AlertEvent(
                         level=AlertLevel.WARNING,
                         source="DisturbanceExecutor",
                         message=(
-                            f"机器{machine_id} 故障（T={self._env.now:.2f}h），"
+                            f"机器{machine_id} 故障（T={self._env.now / 3_600_000:.2f}h），"
                             f"预计恢复 {down_end:.2f}h"
                         ),
                         device_id=str(machine_id),
@@ -328,24 +336,31 @@ class DisturbanceExecutor:
                 )
 
                 # 等待维修完成
-                yield self._env.timeout(down_end - self._env.now)
+                repair_wait_h = down_end - self._env.now / 3_600_000
+                yield self._env.timeout(repair_wait_h * 3_600_000)
 
                 if verbose:
                     logger.info(
                         "[T=%6.2fh] 机器%d 维修完成，继续%s，剩余 %.2fh",
-                        self._env.now,
+                        self._env.now / 3_600_000,
                         machine_id,
                         label,
-                        remaining,
+                        remaining_h,
                     )
                 self._alert(
                     AlertEvent(
                         level=AlertLevel.INFO,
                         source="DisturbanceExecutor",
-                        message=f"机器{machine_id} 维修完成（T={self._env.now:.2f}h）",
+                        message=f"机器{machine_id} 维修完成（T={self._env.now / 3_600_000:.2f}h）",
                         device_id=str(machine_id),
                     )
                 )
+
+        logger.info(
+            "[%s] 工作完成：end=%.2fh",
+            label,
+            self._env.now / 3_600_000,
+        )
 
     @staticmethod
     def _default_alert(event: AlertEvent) -> None:
