@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional
 
 import simpy
 
@@ -12,21 +12,14 @@ from models_base import (
     AlertEvent,
     AlertLevel,
     DeviceState,
-    DispatchRecord,
-    Resource,
     ScheduleRequest,
     ScheduleResult,
     Task,
-    TaskState,
 )
 from strategic import StrategicScheduler
 from tactical import TacticalDispatcher
 from simulation.registry import SimRegistry
-from simulation.disturbance import (
-    DisturbanceConfig,
-    DisturbanceManager,
-    DowntimeMap,
-)
+from simulation.disturbance import DisturbanceConfig, DisturbanceManager
 from simulation.metrics import SimMetrics
 
 logger = logging.getLogger("SimRunner")
@@ -270,23 +263,41 @@ class SimRunner:
             yield self._env.timeout(release_ms)
 
         # ── 3. 向战术层申请设备 ───────────────────────────────
+        RETRY_INTERVAL_MS = 5 * 60 * 1000  # 每5分钟重试一次
+        MAX_WAIT_MS = 4 * 3_600_000  # 最多等4小时
+
         assignment = self._tactical.on_task_ready(task)
         device_id = assignment.device_id
-        machine_id = int(device_id.split("_")[-1])
-        actual_start_ms = assignment.actual_start_ms
 
         if device_id == "UNASSIGNED":
-            logger.error(
-                "[T=%6.2fh] 任务 %s 无法分配设备，标记跳过",
-                self._env.now / 3_600_000,
-                task.id,
-            )
-            # 触发后继事件，避免后继任务永久阻塞
-            if not self._done_events[task.id].triggered:
-                self._done_events[task.id].succeed()
-            return
+            # 轮询等待设备恢复，而不是直接跳过
+            waited_ms = 0
+            while device_id == "UNASSIGNED" and waited_ms < MAX_WAIT_MS:
+                logger.warning(
+                    "[T=%6.2fh] 任务 %s 无可用设备，等待 %.1f min 后重试",
+                    self._env.now / 3_600_000,
+                    task.id,
+                    RETRY_INTERVAL_MS / 60_000,
+                )
+                yield self._env.timeout(RETRY_INTERVAL_MS)
+                waited_ms += RETRY_INTERVAL_MS
+
+                assignment = self._tactical.on_task_ready(task)
+                device_id = assignment.device_id
+
+            # 等待超时，真正跳过
+            if device_id == "UNASSIGNED":
+                logger.error(
+                    "[T=%6.2fh] 任务 %s 等待超时，标记跳过",
+                    self._env.now / 3_600_000,
+                    task.id,
+                )
+                if not self._done_events[task.id].triggered:
+                    self._done_events[task.id].succeed()
+                return
 
         # ── 4. 等待到实际开始时刻 ─────────────────────────────
+        actual_start_ms = assignment.actual_start_ms
         wait = max(0, actual_start_ms - int(self._env.now))
         if wait > 0:
             yield self._env.timeout(wait)
@@ -307,6 +318,7 @@ class SimRunner:
         )
 
         # ── B. 准备/换型延迟（含故障中断）───────────────────
+        machine_id = int(device_id.split("_")[-1])
         setup_delay_h = self._disturbance.sample_setup_delay()
         if setup_delay_h > 0:
             logger.info(
@@ -526,15 +538,15 @@ class SimRunner:
         # ── 2. 调整各任务的 earliest_start_ms ────────────────
         adjusted_tasks: List[Task] = []
         for task in remaining_tasks:
-            record = self._tactical.get_record(task.id)
-            is_running = record is not None and record.state == TaskState.RUNNING
-            new_earliest = now if is_running else max(task.earliest_start_ms, now)
+            # record = self._tactical.get_record(task.id)
+            # is_running = record is not None and record.state == TaskState.RUNNING
+            # new_earliest = now if is_running else max(task.earliest_start_ms, now)
             adjusted_tasks.append(
                 Task(
                     id=task.id,
                     duration_ms=task.duration_ms,
                     required_capability=task.required_capability,
-                    earliest_start_ms=new_earliest,
+                    # earliest_start_ms=new_earliest,
                     deadline_ms=task.deadline_ms,
                 )
             )
@@ -617,6 +629,11 @@ class SimRunner:
                     message=f"重规划失败（超时无解）：{e}",
                 )
             )
+        finally:
+            # 重置战术层 flag
+            self._tactical.reset_reschedule_flag()
+            # 重置战略层 flag
+            self._strategic.reset_reschedule_flag()
 
     # ─────────────────────────────────────────
     # 层间回调

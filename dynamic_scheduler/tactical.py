@@ -68,7 +68,7 @@ class TacticalDispatcher:
     """
 
     # 偏差阈值（ms）
-    DRIFT_THRESHOLD_MS: int = 5_000
+    DRIFT_THRESHOLD_MS: int = 3_600_000
     # 任务超出最晚开始时间后仍未分配，触发 WARNING 告警
     LATE_START_WARNING_MS: int = 2_000
     # 同一任务最大迁移次数，超过后上报 CRITICAL
@@ -128,7 +128,7 @@ class TacticalDispatcher:
             for a in assignments:
                 self._plan[a.task_id] = PlannedWindow(
                     task_id=a.task_id,
-                    resource_id=a.device_id,
+                    device_id=a.device_id,
                     planned_start_ms=a.planned_start_ms,
                     planned_end_ms=a.planned_end_ms,
                     window_slack_ms=a.window_slack_ms,
@@ -137,7 +137,7 @@ class TacticalDispatcher:
                 if a.task_id not in self._completed_tasks:
                     self._records[a.task_id] = DispatchRecord(
                         task_id=a.task_id,
-                        resource_id=a.device_id,
+                        device_id=a.device_id,
                         planned_start_ms=a.planned_start_ms,
                         planned_end_ms=a.planned_end_ms,
                         window_slack_ms=a.window_slack_ms,
@@ -176,13 +176,14 @@ class TacticalDispatcher:
                 # 使用默认窗口（立即开始，无弹性）临时兜底
                 window = PlannedWindow(
                     task_id=task.id,
-                    resource_id="",
+                    device_id="",
                     planned_start_ms=now,
                     planned_end_ms=now + task.duration_ms,
                     window_slack_ms=0,
                 )
 
             candidates = self._registry.get_available(task.required_capability)
+
             if not candidates:
                 self._emit_alert(
                     AlertEvent(
@@ -487,6 +488,10 @@ class TacticalDispatcher:
             reason=reason,
             affected_task_ids=affected,
         )
+
+    def reset_reschedule_flag(self) -> None:
+        with self._lock:
+            self._reschedule_requested = False
 
     # ─────────────────────────────────────────
     # 内部：工具方法

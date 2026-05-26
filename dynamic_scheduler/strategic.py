@@ -90,11 +90,7 @@ class StrategicScheduler(IStrategicScheduler):
     # ─────────────────────────────────────────
     # IStrategicScheduler 接口实现
     # ─────────────────────────────────────────
-    def request_reschedule(
-        self,
-        reason: str,
-        affected_task_ids: List[str],
-    ) -> None:
+    def request_reschedule(self, reason: str, affected_task_ids: List[str]) -> None:
         """
         非阻塞：仅记录请求，不执行实际求解。
         实际求解由 SimRunner._reschedule_response_process() 驱动。
@@ -124,13 +120,18 @@ class StrategicScheduler(IStrategicScheduler):
         if self._on_reschedule_signal is not None:
             self._on_reschedule_signal(reason, affected_task_ids)
 
+    def reset_reschedule_flag(self) -> None:
+        self._reschedule_pending = False
+        self._reschedule_reason = ""
+        self._reschedule_affected = []
+
     def get_current_plan(self) -> Dict[str, PlannedWindow]:
         if self._last_feasible_result is None:
             return {}
         return {
             a.task_id: PlannedWindow(
                 task_id=a.task_id,
-                resource_id=a.device_id,
+                device_id=a.device_id,
                 planned_start_ms=a.planned_start_ms,
                 planned_end_ms=a.planned_end_ms,
                 window_slack_ms=a.window_slack_ms,
@@ -141,9 +142,7 @@ class StrategicScheduler(IStrategicScheduler):
     # ─────────────────────────────────────────
     # 重规划请求查询 / 消费（供 SimRunner 调用）
     # ─────────────────────────────────────────
-    def consume_reschedule_request(
-        self,
-    ) -> Optional[Tuple[str, List[str]]]:
+    def consume_reschedule_request(self) -> Optional[Tuple[str, List[str]]]:
         """
         SimRunner 在响应重规划时调用，消费当前待处理请求。
 
@@ -163,8 +162,7 @@ class StrategicScheduler(IStrategicScheduler):
         return reason, affected
 
     def register_reschedule_signal(
-        self,
-        callback: Callable[[str, List[str]], None],
+        self, callback: Callable[[str, List[str]], None]
     ) -> None:
         """
         注册外部信号回调（SimRunner 注入）。
@@ -175,10 +173,7 @@ class StrategicScheduler(IStrategicScheduler):
     # ─────────────────────────────────────────
     # 计划更新回调
     # ─────────────────────────────────────────
-    def register_plan_callback(
-        self,
-        cb: Callable[[ScheduleResult], None],
-    ) -> None:
+    def register_plan_callback(self, cb: Callable[[ScheduleResult], None]) -> None:
         self._plan_callbacks.append(cb)
 
     def _notify_plan_update(self, result: ScheduleResult) -> None:
@@ -504,22 +499,22 @@ class StrategicScheduler(IStrategicScheduler):
 
 
 if __name__ == "__main__":
-    from models import Resource
+    from models_base import Resource
 
     jobs_data = [
         [
-            (0, 3),
-            (1, 2),
+            # (0, 3),
+            # (1, 2),
             (2, 2),
         ],  # 工件 0: 先在机器0做3小时，再去机器1做2小时，再去机器2做2小时
         [
-            (0, 2),
-            (2, 1),
+            # (0, 2),
+            # (2, 1),
             (1, 4),
         ],  # 工件 1: 先在机器0做2小时，再去机器2做1小时，再去机器1做4小时
         [
-            (1, 4),
-            (2, 3),
+            # (1, 4),
+            # (2, 3),
         ],  # 工件 2: 先在机器1做4小时，再去机器2做3小时 (这个工件只有2道工序)
     ]
 

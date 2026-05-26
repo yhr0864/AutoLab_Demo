@@ -65,49 +65,82 @@ class ScheduleRequest:
 # ─────────────────────────────────────────────
 @dataclass
 class PlannedWindow:
-    """战略层下发的单任务时间窗口"""
+    """
+    战略层下发给战术层的单任务调度窗口。
+
+    战略层求解后，为每个任务分配一个计划开始时刻和结束时刻，
+    同时附带一个松弛余量（window_slack_ms），表示任务允许推迟的最大时长。
+    战术层在执行时可以在 [planned_start_ms, latest_start_ms] 范围内
+    灵活调整实际开始时刻，超出则触发重规划。
+    """
 
     task_id: str
-    resource_id: str
+    device_id: str
     planned_start_ms: int
     planned_end_ms: int
+    """
+    允许推迟的最大余量（ms）。
+    表示在不破坏整体计划可行性的前提下，任务最多可以比计划晚多久开始。
+    = 0 时必须严格按计划时刻执行；
+    > 0 时战术层有一定的弹性空间。
+    """
     window_slack_ms: int
 
     @property
     def latest_start_ms(self) -> int:
+        """允许的最晚开始时刻 = planned_start_ms + window_slack_ms"""
         return self.planned_start_ms + self.window_slack_ms
 
     @property
     def latest_end_ms(self) -> int:
+        """允许的最晚结束时刻 = planned_end_ms + window_slack_ms"""
         return self.planned_end_ms + self.window_slack_ms
 
 
 @dataclass
 class DispatchRecord:
-    """战术层的完整分配记录（含实际执行数据）"""
+    """
+    战术层的完整任务分配记录。
+
+    包含战略层下发的计划信息（planned_*），
+    以及任务实际执行过程中产生的运行时数据（actual_*、state、migrate_count）。
+    两者的差值即为漂移量（drift），用于衡量执行与计划的偏差程度。
+    """
 
     task_id: str
     device_id: str  # 具体资源 ID（物理设备在此处才出现）
-    planned_start_ms: int
+    planned_start_ms: int  # 战略层计划的开始时刻（绝对时间戳，ms）
     planned_end_ms: int
-    window_slack_ms: int
-    capability: str = None  # 冗余存储，避免迁移时反查
-    actual_start_ms: Optional[int] = None
+    window_slack_ms: int  # 允许推迟的最大余量（ms），继承自 PlannedWindow
+    capability: str = None  # 任务所需能力类型，冗余存储以避免迁移时反查任务表
+    actual_start_ms: Optional[int] = (
+        None  # 任务实际开始时刻（绝对时间戳，ms），未开始时为 None
+    )
     actual_end_ms: Optional[int] = None
-    state: TaskState = TaskState.READY
-    migrate_count: int = 0
-
-    @property
-    def end_drift_ms(self) -> int:
-        if self.actual_end_ms is None:
-            return 0
-        return abs(self.actual_end_ms - self.planned_end_ms)
+    state: TaskState = TaskState.READY  # 任务当前状态：READY / RUNNING / DONE / FAILED
+    migrate_count: int = 0  # 任务被迁移的次数，每次重规划后换设备执行则 +1
 
     @property
     def start_drift_ms(self) -> int:
+        """
+        开始时刻漂移量（ms）。
+        实际开始时刻与计划开始时刻的绝对偏差，
+        未开始时返回 0。
+        """
         if self.actual_start_ms is None:
             return 0
         return abs(self.actual_start_ms - self.planned_start_ms)
+
+    @property
+    def end_drift_ms(self) -> int:
+        """
+        结束时刻漂移量（ms）。
+        实际结束时刻与计划结束时刻的绝对偏差，
+        未结束时返回 0。
+        """
+        if self.actual_end_ms is None:
+            return 0
+        return abs(self.actual_end_ms - self.planned_end_ms)
 
 
 @dataclass

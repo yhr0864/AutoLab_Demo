@@ -162,8 +162,8 @@ def main() -> None:
     sim = SimRunner(
         request=request,
         disturbance_config=config,
-        reschedule_interval=3_600_000,  # 每小时触发一次定时重规划
-        rng_seed=43,
+        reschedule_interval=2 * 3_600_000,  # 每2小时触发一次定时重规划
+        rng_seed=42,
     )
     metrics = sim.run(until=22 * H)  # 给予 2 倍理论工期余量
     print(metrics.report())
