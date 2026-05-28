@@ -13,6 +13,7 @@ from models_base import (
     ScheduleRequest,
     ScheduleResult,
     Task,
+    TaskState,
 )
 from scheduler.runtime import IRuntime, IRegistryRuntime
 from registry import DeviceRegistry
@@ -115,6 +116,7 @@ class Runner(ABC):
         通过 plan_callback 触发，此处无需手动调用 update_plan()。
         """
         logger.info("═══ 初始战略规划 ═══")
+
         try:
             t0 = time.perf_counter()
             result = self._strategic.solve(self._request)
@@ -167,16 +169,20 @@ class Runner(ABC):
             return None
 
         # ── 2. 添加未完成任务 ────────────────────────
-        adjusted_tasks = [
-            Task(
-                id=task.id,
-                duration_ms=task.duration_ms,
-                required_capability=task.required_capability,
-                # earliest_start_ms=max(task.earliest_start_ms, now),
-                deadline_ms=task.deadline_ms,
+        adjusted_tasks: List[Task] = []
+        for task in remaining_tasks:
+            record = self._tactical.get_record(task.id)
+            is_running = record is not None and record.state == TaskState.RUNNING
+            new_earliest = now if is_running else max(task.earliest_start_ms, now)
+            adjusted_tasks.append(
+                Task(
+                    id=task.id,
+                    duration_ms=task.duration_ms,
+                    required_capability=task.required_capability,
+                    earliest_start_ms=new_earliest,
+                    deadline_ms=task.deadline_ms,
+                )
             )
-            for task in remaining_tasks
-        ]
 
         # ── 3. 过滤故障设备 ───────────────────────────────────
         snapshot = self._registry.snapshot()

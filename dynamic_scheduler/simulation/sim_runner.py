@@ -138,7 +138,7 @@ class SimRunner(Runner):
         logger.info("═══ 仿真开始（until=%.2fh）═══", end_time / 3_600_000)
         self._env.run(until=end_time)
 
-        return self.metrics
+        return self.metrics, result
 
     def stop(self) -> None:
         self._stopped = True
@@ -335,11 +335,37 @@ class SimRunner(Runner):
 
         # ── 8. 指标记录 ───────────────────────────────────────
         record = self._tactical.get_record(task.id)
+
         planned_end = (
             record.planned_end_ms if record else actual_start + task.duration_ms
         )
         drift_ms = abs(actual_end - planned_end)
         self.metrics.record_completion(task.id, actual_end, drift_ms)
+
+        # ── ★ 新增：机器利用率 & 任务明细 ────────────────────
+        planned_start = record.planned_start_ms if record else actual_start
+
+        self.metrics.record_machine_usage(
+            device_id=device_id,
+            occupied_h=(actual_end - actual_start) / 3_600_000,
+            productive_h=actual_duration_h,
+            setup_h=setup_delay_h,
+        )
+        self.metrics.record_task_detail(
+            {
+                "task_id": task.id,
+                "device_id": device_id,
+                "planned_start_ms": planned_start,
+                "planned_end_ms": planned_end,
+                "actual_start_ms": actual_start,
+                "actual_end_ms": actual_end,
+                "start_delay_ms": max(0, actual_start - planned_start),
+                "finish_delay_ms": max(0, actual_end - planned_end),
+                "productive_ms": actual_duration_h * 3_600_000,
+                "setup_ms": setup_delay_h * 3_600_000,
+            }
+        )
+        # ── ★ 新增结束 ────────────────────────────────────────
 
         logger.info(
             "[T=%6.2fh] 任务 %-10s (%d/%d) 完成："

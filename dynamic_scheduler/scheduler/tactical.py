@@ -92,7 +92,14 @@ class TacticalDispatcher:
                     window_slack_ms=a.window_slack_ms,
                 )
                 # 保留已完成任务的记录，仅更新待执行任务
-                if a.task_id not in self._completed_tasks:
+                if a.task_id in self._completed_tasks:
+                    # 已完成任务不更新（保留运行时数据）
+                    continue
+
+                existing = self._records.get(a.task_id)
+
+                if existing is None:
+                    # ── 新任务：直接创建 ──────────────────────────
                     self._records[a.task_id] = DispatchRecord(
                         task_id=a.task_id,
                         device_id=a.device_id,
@@ -101,6 +108,23 @@ class TacticalDispatcher:
                         planned_end_ms=a.planned_end_ms,
                         window_slack_ms=a.window_slack_ms,
                     )
+
+                else:
+                    # ── 已存在任务：只更新计划时间，保留运行时数据 ──
+                    existing.planned_start_ms = a.planned_start_ms
+                    existing.planned_end_ms = a.planned_end_ms
+                    existing.window_slack_ms = a.window_slack_ms
+
+                    # 设备变更（重规划可能调整分配）
+                    if existing.device_id != a.device_id:
+                        logger.info(
+                            "重规划调整设备：task=%s %s → %s",
+                            a.task_id,
+                            existing.device_id,
+                            a.device_id,
+                        )
+                        existing.device_id = a.device_id
+                        existing.migrate_count += 1
 
             logger.info("计划已更新：%d 条任务窗口", len(self._plan))
 

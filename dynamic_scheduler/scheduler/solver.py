@@ -20,6 +20,12 @@ solver.solve() 返回
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
 import time
 import logging
 from typing import Dict, List, Optional, Tuple, Callable
@@ -270,8 +276,22 @@ class CpSatSolver:
                 start, task.duration_ms, end, f"i_{task.id}"
             )
             task_vars[task.id] = (start, end, interval)
+
+            logger.debug(
+                "[DEBUG] 创建任务变量: task_id=%s lo=%d hi=%d duration=%d",
+                task.id,
+                lo,
+                hi,
+                task.duration_ms,
+            )
+
             if task.deadline_ms is not None:
                 model.add(end <= task.deadline_ms)
+
+        logger.debug(
+            "[DEBUG] _build_model: precedence_pairs=%s",
+            request.precedence_pairs,
+        )
 
         # ── 步骤 3：注入 DAG 前置依赖约束（DAG 引擎接口核心）────
         for pred_id, succ_id in request.precedence_pairs:
@@ -303,6 +323,24 @@ class CpSatSolver:
             # Makespan 权重 10000 远大于优先级权重，优先保证总时间最短
             model.minimize(makespan * self.MAKESPAN_WEIGHT + priority_cost)
 
+        logger.debug("[DEBUG] priority_weights=%s", request.priority_weights)
+
+        if request.priority_weights:
+            weighted_ends = [
+                task_vars[t.id][1] * request.priority_weights.get(t.id, 1)
+                for t in request.tasks
+            ]
+            model.minimize(sum(weighted_ends))
+            logger.debug("[DEBUG] 优化目标: 加权完成时间之和")
+        else:
+            makespan = model.new_int_var(0, horizon, "makespan")
+            model.add_max_equality(
+                makespan,
+                [task_vars[t.id][1] for t in request.tasks],
+            )
+            model.minimize(makespan)
+            logger.debug("[DEBUG] 优化目标: makespan")
+
         return model, solver, task_vars, cap_resources
 
     # ── 结果提取 ───────────────────────────────────────────────
@@ -326,10 +364,24 @@ class CpSatSolver:
         # 同一能力组内已分配的资源索引（轮询分配，保证负载均衡）
         cap_alloc_idx: Dict[str, int] = {}
 
+        logger.debug("[DEBUG] ========== CP-SAT 求解结果 ==========")
+
         for task in request.tasks:
             start_var, end_var, _ = task_vars[task.id]
             s = solver.value(start_var)
             e = solver.value(end_var)
+
+            # ★ 临时调试：确认求解器返回值的单位
+            logger.debug(
+                "[DEBUG] task=%-10s solver_start=%10d (%.2fh) solver_end=%10d (%.2fh) duration=%10d (%.2fh)",
+                task.id,
+                s,
+                s / 3_600_000,
+                e,
+                e / 3_600_000,
+                task.duration_ms,
+                task.duration_ms / 3_600_000,
+            )
 
             # 资源分配：在同能力组内轮询
             cap = task.required_capability
@@ -355,9 +407,114 @@ class CpSatSolver:
 
         makespan_ms = max(a.planned_end_ms for a in assignments) if assignments else 0
 
+        logger.debug("[DEBUG] makespan=%.2fh", makespan_ms / 3_600_000)
+        logger.debug("[DEBUG] ==========================================")
+
         return ScheduleResult(
             status=status_str,
             solve_time_ms=elapsed_ms,
             assignments=assignments,
             makespan_ms=makespan_ms,
         )
+
+
+if __name__ == "__main__":
+    from models_base import Resource
+
+    H = 1
+
+    def build_request() -> ScheduleRequest:
+        """
+        构建 3 机器 Job-Shop 调度请求。
+        Sim / Real 两种模式共用同一份请求定义。
+        """
+        resources = [
+            Resource(id="machine_0", capability="milling", capacity=1),
+            Resource(id="machine_1", capability="drilling", capacity=1),
+            Resource(id="machine_2", capability="grinding", capacity=1),
+        ]
+
+        tasks = [
+            # ── job0 ─────────────────────────────────────────────
+            Task(
+                id="j0_op0",
+                duration_ms=3 * H,
+                required_capability="milling",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            Task(
+                id="j0_op1",
+                duration_ms=2 * H,
+                required_capability="drilling",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            Task(
+                id="j0_op2",
+                duration_ms=2 * H,
+                required_capability="grinding",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            # ── job1 ─────────────────────────────────────────────
+            Task(
+                id="j1_op0",
+                duration_ms=2 * H,
+                required_capability="milling",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            Task(
+                id="j1_op1",
+                duration_ms=1 * H,
+                required_capability="grinding",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            Task(
+                id="j1_op2",
+                duration_ms=4 * H,
+                required_capability="drilling",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            # ── job2 ─────────────────────────────────────────────
+            Task(
+                id="j2_op0",
+                duration_ms=4 * H,
+                required_capability="drilling",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+            Task(
+                id="j2_op1",
+                duration_ms=3 * H,
+                required_capability="grinding",
+                earliest_start_ms=0,
+                deadline_ms=None,
+            ),
+        ]
+
+        precedence_pairs = [
+            ("j0_op0", "j0_op1"),
+            ("j0_op1", "j0_op2"),
+            ("j1_op0", "j1_op1"),
+            ("j1_op1", "j1_op2"),
+            ("j2_op0", "j2_op1"),
+        ]
+
+        return ScheduleRequest(
+            tasks=tasks,
+            precedence_pairs=precedence_pairs,
+            resources=resources,
+            horizon_ms=11 * H,
+            priority_weights={"makespan": 1.0},
+        )
+
+    request = build_request()
+    solver = CpSatSolver()
+    result = solver.solve(request=request)
+
+    print(result.status)
+    print(result.makespan_ms)

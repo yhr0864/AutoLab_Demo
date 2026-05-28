@@ -1,9 +1,15 @@
 """
 调度系统启动入口。
 
-支持两种运行模式
+支持四种运行模式
 ────────────────────────────────────────────────────────────────
-  --mode sim    SimPy 仿真（默认）
+  --mode once   单次详细仿真（打印所有日志和明细）
+                使用 SimRunner + runner_api.run_once()
+
+  --mode many   多次随机仿真（静默日志，输出统计汇总）
+                使用 SimRunner + runner_api.run_many()
+
+  --mode sim    SimPy 仿真（原有模式，保留兼容）
                 使用 SimRunner，时钟由 simpy.Environment 驱动，
                 含随机扰动模型和仿真指标采集。
 
@@ -47,6 +53,7 @@ from models_base import (
 from simulation.sim_runner import SimRunner
 from simulation.real_runner import RealRunner
 from simulation.disturbance import DisturbanceConfig
+from simulation.runner_api import run_once, run_many
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +65,10 @@ logger = logging.getLogger("main")
 
 # ── 时间单位 ──────────────────────────────────────────────────
 H = 3_600_000  # 1 小时 = 3_600_000 ms
+
+# ── 问题参数 ──────────────────────────────────────────────────
+THEORETICAL_MAKESPAN = 11.0  # 理论最优完工时间（小时）
+MACHINE_IDS = [0, 1, 2]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -149,26 +160,24 @@ def build_request() -> ScheduleRequest:
         precedence_pairs=precedence_pairs,
         resources=resources,
         horizon_ms=11 * H,
-        priority_weights={"makespan": 1.0},
     )
 
 
 # ─────────────────────────────────────────────────────────────
-# 仿真模式
+# 扰动配置构建
 # ─────────────────────────────────────────────────────────────
-def run_sim(args: argparse.Namespace) -> None:
+def build_disturbance_config(no_fault: bool = False) -> DisturbanceConfig:
     """
-    SimPy 仿真模式。
+    构建扰动配置。
 
-    时钟单位：ms（simpy.Environment.now）
-    含随机扰动 / 故障注入 / 仿真指标采集。
+    Parameters
+    ----------
+    no_fault : 是否禁用机器故障（用于对比实验）
     """
-    logger.info("═══ 模式：SimPy 仿真 ═══")
-
-    disturbance_config = DisturbanceConfig(
+    return DisturbanceConfig(
         machine_mtbf={0: 12.0, 1: 10.0, 2: 11.0},
         simulation_horizon=30.0,
-        fault_prob=0.8,
+        fault_prob=0.0 if no_fault else 0.8,
         process_factor_low=0.90,
         process_factor_high=1.25,
         process_factor_mode=1.03,
@@ -180,6 +189,85 @@ def run_sim(args: argparse.Namespace) -> None:
         release_delay_high=0.50,
     )
 
+
+# ─────────────────────────────────────────────────────────────
+# once 模式：单次详细仿真
+# ─────────────────────────────────────────────────────────────
+def run_once_mode(args: argparse.Namespace) -> None:
+    """
+    单次详细仿真模式。
+
+    打印所有日志、任务明细、机器利用率。
+    适合调试和深入分析单次运行结果。
+    """
+    logger.info("═══ 模式：单次详细仿真 ═══")
+    logger.info("随机种子：%d", args.seed)
+    logger.info("重规划间隔：%.1f 小时", args.reschedule_interval)
+
+    request = build_request()
+    reschedule_ms = args.reschedule_interval * H
+    dist_cfg = build_disturbance_config(no_fault=args.no_fault)
+
+    if args.no_fault:
+        logger.info("已禁用机器故障")
+
+    run_once(
+        request=request,
+        theoretical_makespan=THEORETICAL_MAKESPAN,
+        machine_ids=MACHINE_IDS,
+        seed=args.seed,
+        verbose=True,
+        reschedule_interval=reschedule_ms,
+        disturbance_config=dist_cfg,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# many 模式：多次随机仿真统计
+# ─────────────────────────────────────────────────────────────
+def run_many_mode(args: argparse.Namespace) -> None:
+    """
+    多次随机仿真统计模式。
+
+    静默日志，仅输出统计汇总（均值/P50/P90/P95/利用率等）。
+    适合评估调度策略的稳定性和鲁棒性。
+    """
+    logger.info("═══ 模式：多次随机仿真统计 ═══")
+    logger.info("仿真次数：%d", args.n)
+    logger.info("起始种子：%d", args.base_seed)
+    logger.info("重规划间隔：%.1f 小时", args.reschedule_interval)
+
+    request = build_request()
+    reschedule_ms = args.reschedule_interval * H
+    dist_cfg = build_disturbance_config(no_fault=args.no_fault)
+
+    if args.no_fault:
+        logger.info("已禁用机器故障")
+
+    run_many(
+        request=request,
+        theoretical_makespan=THEORETICAL_MAKESPAN,
+        machine_ids=MACHINE_IDS,
+        n=args.n,
+        base_seed=args.base_seed,
+        reschedule_interval=reschedule_ms,
+        disturbance_config=dist_cfg,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# sim 模式：原有仿真模式（保留兼容）
+# ─────────────────────────────────────────────────────────────
+def run_sim(args: argparse.Namespace) -> None:
+    """
+    SimPy 仿真模式（原有模式，保留兼容）。
+
+    时钟单位：ms（simpy.Environment.now）
+    含随机扰动 / 故障注入 / 仿真指标采集。
+    """
+    logger.info("═══ 模式：SimPy 仿真 ═══")
+
+    disturbance_config = build_disturbance_config(no_fault=args.no_fault)
     request = build_request()
 
     runner = SimRunner(
@@ -194,7 +282,7 @@ def run_sim(args: argparse.Namespace) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 真实设备模式
+# real 模式：真实设备运行
 # ─────────────────────────────────────────────────────────────
 def run_real(args: argparse.Namespace) -> None:
     """
@@ -243,27 +331,68 @@ def run_real(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Job-Shop 调度系统",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例用法：
+  # 单次详细仿真（打印所有日志和明细）
+  python main.py --mode once --seed 42
+  
+  # 100 次随机仿真统计（静默日志，输出汇总）
+  python main.py --mode many --n 100 --base-seed 1000
+  
+  # 原有仿真模式（保留兼容）
+  python main.py --mode sim --until 22.0
+  
+  # 真实设备模式
+  python main.py --mode real --confirm-real
+  
+  # 禁用机器故障（对比实验）
+  python main.py --mode once --no-fault
+  
+  # 自定义重规划间隔（1 小时）
+  python main.py --mode once --reschedule-interval 1.0
+        """,
     )
 
     # ── 运行模式 ──────────────────────────────────────────────
     parser.add_argument(
         "--mode",
-        choices=["sim", "real"],
-        default="sim",
-        help="运行模式：sim=SimPy仿真  real=真实设备",
+        choices=["once", "many", "sim", "real"],
+        default="once",
+        help=(
+            "运行模式：\n"
+            "  once = 单次详细仿真（打印所有日志）\n"
+            "  many = 多次统计分析（静默日志）\n"
+            "  sim  = SimPy仿真（原有模式）\n"
+            "  real = 真实设备"
+        ),
     )
 
-    # ── 真实设备模式安全确认 ──────────────────────────────────
+    # ── once/many 模式参数 ────────────────────────────────────
     parser.add_argument(
-        "--confirm-real",
-        action="store_true",
-        default=False,
-        dest="confirm_real",
-        help="[real模式] 确认已替换硬件通信伪代码，允许连接真实设备",
+        "--n",
+        type=int,
+        default=100,
+        metavar="INT",
+        help="[many模式] 仿真次数",
+    )
+    parser.add_argument(
+        "--base-seed",
+        type=int,
+        default=1000,
+        metavar="INT",
+        dest="base_seed",
+        help="[many模式] 起始随机种子（每次递增 1）",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        metavar="INT",
+        help="[once/sim模式] 随机数种子",
     )
 
-    # ── 仿真参数 ──────────────────────────────────────────────
+    # ── sim 模式参数 ──────────────────────────────────────────
     parser.add_argument(
         "--until",
         type=float,
@@ -271,12 +400,22 @@ def parse_args() -> argparse.Namespace:
         metavar="HOURS",
         help="[sim模式] 仿真截止时刻（小时）",
     )
+
+    # ── real 模式参数 ─────────────────────────────────────────
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        metavar="INT",
-        help="[sim模式] 随机数种子",
+        "--confirm-real",
+        action="store_true",
+        default=False,
+        dest="confirm_real",
+        help="[real模式] 确认已替换硬件通信伪代码，允许连接真实设备",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        metavar="SECONDS",
+        dest="poll_interval",
+        help="[real模式] 任务状态轮询间隔（秒）",
     )
 
     # ── 共用参数 ──────────────────────────────────────────────
@@ -289,12 +428,11 @@ def parse_args() -> argparse.Namespace:
         help="定时重规划间隔（小时）",
     )
     parser.add_argument(
-        "--poll-interval",
-        type=float,
-        default=1.0,
-        metavar="SECONDS",
-        dest="poll_interval",
-        help="[real模式] 任务状态轮询间隔（秒）",
+        "--no-fault",
+        action="store_true",
+        default=False,
+        dest="no_fault",
+        help="禁用机器故障（用于对比实验）",
     )
 
     # ── 日志级别 ──────────────────────────────────────────────
@@ -323,7 +461,11 @@ def main() -> None:
         args.reschedule_interval,
     )
 
-    if args.mode == "sim":
+    if args.mode == "once":
+        run_once_mode(args)
+    elif args.mode == "many":
+        run_many_mode(args)
+    elif args.mode == "sim":
         run_sim(args)
     elif args.mode == "real":
         run_real(args)
