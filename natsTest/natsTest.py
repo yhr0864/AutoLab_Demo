@@ -76,13 +76,13 @@ async def main():
     # 连接 NATS Server
     try:
         nc = await nats.connect(
-            servers="nats://192.168.198.128:5223",
-            name="PCR_connection",
+            servers="nats://10.169.109.132:4222",
+            name="PlanarMotorTest",
             connect_timeout=3,
         )
 
-        js = nc.jetstream(domain="leaf1")
-        await ensure_stream(js, "TEST_DEVICE")
+        js = nc.jetstream()
+        await ensure_stream(js, "LAB_DEVICE_STREAM")
         print(f"✅ 已连接到 NATS Server")
     except Exception as e:
         print("❌ 连接失败，请先启动 nats-server")
@@ -91,14 +91,14 @@ async def main():
     print(f"{'='*50}")
 
     # 并发运行所有传感器
-    tasks = [asyncio.create_task(run_sensor(js, sid)) for sid in SENSORS]
+    # tasks = [asyncio.create_task(run_sensor(js, sid)) for sid in SENSORS]
 
-    try:
-        await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        print("\n传感器停止上报")
-    finally:
-        await nc.close()
+    # try:
+    #     await asyncio.gather(*tasks)
+    # except KeyboardInterrupt:
+    #     print("\n传感器停止上报")
+    # finally:
+    #     await nc.close()
 
 
 if __name__ == "__main__":

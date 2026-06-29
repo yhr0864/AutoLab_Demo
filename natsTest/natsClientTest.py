@@ -55,6 +55,14 @@ def display_dashboard():
     print("=" * 60)
 
 
+async def handle_data(msg):
+    try:
+        data = json.loads(msg.data.decode())
+        print(data)
+    except Exception as e:
+        print(f"消息处理错误: {e}")
+
+
 async def handle_temperature(msg):
     """处理收到的温度消息"""
     try:
@@ -113,21 +121,19 @@ async def main():
     # 连接 NATS
     nc = await nats.connect(
         servers="nats://10.169.109.132:4222",
-        name="PCR_connection",
+        name="PlanarMotorTest",
         connect_timeout=3,
     )
     js = nc.jetstream()
 
     print("✅ 监控系统启动")
-    print("📡 订阅所有传感器数据: lab.device.>")
+    print("📡 订阅PlanarMotor数据: lab.device.>")
 
     # 查询历史数据
-    await query_history(js)
+    # await query_history(js)
 
     # 订阅实时数据（通配符订阅所有传感器）
-    sub = await js.subscribe(
-        subject="lab.device.>", cb=handle_temperature, durable="device"
-    )
+    sub = await js.subscribe(subject="lab.device.>", cb=handle_data, durable="device")
 
     print("👁️  开始实时监控...")
 

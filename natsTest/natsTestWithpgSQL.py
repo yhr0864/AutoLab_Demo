@@ -7,7 +7,6 @@ from datetime import datetime
 from nats.js.client import JetStreamContext
 from nats.js.errors import NotFoundError
 
-
 DB_CONFIG = {
     "host": "10.169.109.132",
     "port": 5432,

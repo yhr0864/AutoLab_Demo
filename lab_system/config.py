@@ -21,14 +21,18 @@ SUBJECTS = {
     "centrifuge_alert": "lab.centrifuge.alert",
     "incubator_status": "lab.incubator.status",
     "incubator_alert": "lab.incubator.alert",
+    "planarmotor_status": "lab.planarmotor.status",
+    "planarmotor_alert": "lab.planarmotor.alert",
     # 指令通道
     "cmd_centrifuge": "cmd.centrifuge.{device_id}",
     "cmd_incubator": "cmd.incubator.{device_id}",
+    "cmd_planarmotor": "cmd.planarmotor.{device_id}",
 }
 
 # 设备ID
 CENTRIFUGE_ID = "centrifuge-01"
 INCUBATOR_ID = "incubator-01"
+PLANARMOTOR_ID = "planarmotor-01"
 
 # 告警阈值
 ALERT_THRESHOLDS = {
@@ -41,4 +45,5 @@ ALERT_THRESHOLDS = {
         "min_temp": 35.0,
         "max_co2": 6.0,
     },
+    "planarmotor": {"max_spd": 1500, "max_temp": 45},
 }

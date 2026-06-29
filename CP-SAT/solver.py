@@ -375,7 +375,10 @@ class CpSatSolver:
 if __name__ == "__main__":
     request = {
         "horizon_hours": 100,
-        "priority_weights": {"makespan": 1.0},
+        "priority_weights": {
+            "P1_load_cart": 100.0,
+            "P1_move_to_pipettor": 1.0,
+        },  # 若无则为None
         "resources": [
             {"id": "carts", "capability": "maglev_cart", "capacity": 2},
             {"id": "track_main", "capability": "single_lane_track", "capacity": 1},

@@ -17,7 +17,7 @@ from models_base import (
 from scheduler.runtime import RealTimeRuntime, RealTimeRegistryRuntime
 from simulation.runner import Runner
 
-logger = logging.getLogger("RealRunner")
+logger = logging.getLogger("RealRunner") 
 
 
 class RealRunner(Runner):

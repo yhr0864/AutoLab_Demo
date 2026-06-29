@@ -1,18 +1,15 @@
-# centrifuge.py
+# 平面电机设备端
 import random
 from base_device import BaseDevice
-from config import CENTRIFUGE_ID
+from config import PLANARMOTOR_ID
 
 
-class Centrifuge(BaseDevice):
-    DEVICE_TYPE = "centrifuge"
+class PlanarMotor(BaseDevice):
+    DEVICE_TYPE = "planarmotor"
 
     def default_state(self) -> dict:
         return {
             "power": False,
-            "rpm": 0,
-            "target_rpm": 0,
-            "temp": 25.0,
             "status": "idle",
         }
 

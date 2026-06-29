@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package calculator;
+
+option go_package = "GoToPy/client/proto/calculator";
+
+// Calculator service definition
+service Calculator {
+  // Add two numbers and return the result
+  rpc Add (AddRequest) returns (AddResponse);
+}
+
+// Request message containing two numbers
+message AddRequest {
+  double a = 1;
+  double b = 2;
+}
+
+// Response message containing the result
+message AddResponse {
+  double result = 1;
+}
