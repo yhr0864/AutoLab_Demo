@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 import time
 import logging
+from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 from ortools.sat.python import cp_model
 
@@ -40,25 +41,24 @@ class CpSatSolver:
     纯 CP-SAT 求解器，无任何运行时/调度器依赖。
     可独立实例化、独立测试。
 
-    本层为能力级调度：只用 AddCumulative 约束各能力的并发上限，
-    不绑定具体物理设备，输出仅含「时序 + 能力需求」。
+    Parameters
+        ----------
+        options : dict
+            来自 input.json 的 options 字段，可含：
+              timeout_seconds          调度求解超时（秒）
+              fallback_timeout_seconds 兜底求解超时（秒）
+              num_search_workers       并行 worker 数
+              makespan_weight          makespan 权重
+              priority_weight          优先级权重
     """
 
-    TIME_BUDGET_SECONDS: float = 0.5
-    FALLBACK_TIME_BUDGET_SECONDS: float = 0.2
-    NUM_SEARCH_WORKERS: int = 4
-    MAKESPAN_WEIGHT: int = 10_000
-    PRIORITY_SCALE: int = 1_000
-
-    def __init__(
-        self,
-        time_budget_s: float = TIME_BUDGET_SECONDS,
-        fallback_budget_s: float = FALLBACK_TIME_BUDGET_SECONDS,
-        num_workers: int = NUM_SEARCH_WORKERS,
-    ) -> None:
-        self.time_budget_s = time_budget_s
-        self.fallback_budget_s = fallback_budget_s
-        self.num_workers = num_workers
+    def __init__(self, options: dict | None = None) -> None:
+        options = options or {}
+        self.time_budget_s = options.get("timeout_seconds", 0.5)
+        self.fallback_budget_s = options.get("fallback_timeout_seconds", 0.2)
+        self.num_workers = options.get("num_search_workers", 4)
+        self.makespan_weight = options.get("makespan_weight", 10.0)
+        self.priority_weight = options.get("priority_weight", 20.0)
 
     # ── 公共入口 ───────────────────────────────────────────────
     def solve(
@@ -184,7 +184,8 @@ class CpSatSolver:
             Task(
                 id=t.id,
                 duration_ms=t.duration_ms,
-                required_capability=t.required_capabilities,
+                required_capabilities=t.required_capabilities,
+                eligible_devices=t.eligible_devices,
                 earliest_start_ms=t.earliest_start_ms,
                 deadline_ms=None,  # ✅ 松弛 deadline
             )
@@ -198,7 +199,7 @@ class CpSatSolver:
             priority_weights=None,  # ✅ 松弛优先级目标（纯可行性求解）
         )
 
-        model, solver, task_vars, cap_resources = self._build_model(
+        model, solver, task_vars = self._build_model(
             relaxed_request,
             time_budget=self.fallback_budget_s,
             feasibility_only=True,  # ✅ 不设优化目标，只求可行解
@@ -214,7 +215,6 @@ class CpSatSolver:
                 solver,
                 task_vars,
                 relaxed_request,
-                cap_resources,
                 status,
                 elapsed_ms,
                 override_status="EMERGENCY",
@@ -234,9 +234,10 @@ class CpSatSolver:
         构建 CP-SAT 模型，返回 (model, solver, task_vars)
 
         本层为纯能力级调度：
-        - 每种 capability 用一条 AddCumulative 约束限制并发总量。
-        - 不绑定具体物理设备。
-        - 支持多能力任务：required_capabilities = {"maglev_cart": 1, ...}
+        - 把每个任务 eligible_devices[cap] 的设备集合视为「匿名资源池」，
+          相同集合的任务共享一条 AddCumulative，容量 = 池内设备数。
+        - 不绑定具体物理设备（具体绑定交给下游分配层）。
+        - 支持多能力任务。
         """
 
         model = cp_model.CpModel()
@@ -249,16 +250,7 @@ class CpSatSolver:
 
         horizon = request.horizon_ms
 
-        # ── 步骤 1：预计算资源容量表 ───────────────────────
-        # capability -> 该类型资源总容量（同能力设备可并行）
-        cap_capacity: Dict[str, int] = {}
-
-        for res in request.resources:
-            cap_capacity[res.capability] = (
-                cap_capacity.get(res.capability, 0) + res.capacity
-            )
-
-        # ── 步骤 2：为每个任务创建区间变量 ──────────────────────
+        # ── 步骤 1：为每个任务创建区间变量 ──────────────────────
         # task_id -> (start_var, end_var, interval_var)
         task_vars: Dict[str, Tuple] = {}
         for task in request.tasks:
@@ -279,38 +271,48 @@ class CpSatSolver:
             request.precedence_pairs,
         )
 
-        # ── 步骤 3：注入 DAG 前置依赖约束（DAG 引擎接口核心）────
+        # ── 步骤 2：注入 DAG 前置依赖约束（DAG 引擎接口核心）────
         for pred_id, succ_id in request.precedence_pairs:
             _, pred_end, _ = task_vars[pred_id]
             succ_start, _, _ = task_vars[succ_id]
             model.add(succ_start >= pred_end)
 
-        # ── 步骤 4：资源互斥约束 ─────────────────────────────────
-        # 按能力类型分组，同类设备总数即为资源容量
+        # ── 步骤 3：资源池并发约束（按 eligible_devices 子集分组）──
+        # 语义：eligible_devices[cap] 的设备集合 = 可互换匿名资源池。
+        #       调度层不关心分到哪台，只保证「同池并发 ≤ 池容量」。
+        # 实现：相同 frozenset(设备) 的任务共享一条 cumulative，
+        #       容量 = 池内设备数。
+        # 前提：池之间不重叠（同能力任务白名单要么相同要么不相交）。
         cap_intervals: Dict[str, List] = {}
         cap_demands: Dict[str, List[int]] = {}
         for task in request.tasks:
             _, _, interval = task_vars[task.id]
             for cap, demand in task.required_capabilities.items():
-                cap_intervals.setdefault(cap, []).append(interval)
-                cap_demands.setdefault(cap, []).append(demand)
+                dev_ids = task.eligible_devices.get(cap, [])
+                key = (cap, frozenset(dev_ids))
+                cap_intervals.setdefault(key, []).append(interval)
+                cap_demands.setdefault(key, []).append(demand)
 
-        for cap, intervals in cap_intervals.items():
-            demands = cap_demands[cap]
-            capacity = cap_capacity[cap]
+        print(cap_demands)
+
+        for (cap, dev_set), intervals in cap_intervals.items():
+            demands = cap_demands[(cap, dev_set)]
+            capacity = max(1, len(dev_set))
             model.add_cumulative(intervals, demands, capacity)
 
-        # ── 步骤 5：优化目标（可行性模式下跳过） ───────────────────────────────
+        # ── 步骤 4：优化目标（可行性模式下跳过） ───────────────────────────────
         if not feasibility_only:
-            makespan = model.new_int_var(0, horizon, "makespan")
-            model.add_max_equality(makespan, [e for _, e, _ in task_vars.values()])
-            weights = request.priority_weights or {}
-            priority_cost = sum(
-                int(weights.get(t.id, 1.0) * self.PRIORITY_SCALE) * task_vars[t.id][0]
-                for t in request.tasks
-            )
-            # Makespan 权重 10000 远大于优先级权重，优先保证总时间最短
-            model.minimize(makespan * self.MAKESPAN_WEIGHT + priority_cost)
+            end_vars = [e for _, e, _ in task_vars.values()]
+            if end_vars:
+                makespan = model.new_int_var(0, horizon, "makespan")
+                model.add_max_equality(makespan, end_vars)
+                weights = request.priority_weights or {}
+                priority_cost = sum(
+                    int(weights.get(t.id, 1.0) * self.priority_weight)
+                    * task_vars[t.id][0]
+                    for t in request.tasks
+                )
+                model.minimize(makespan * self.makespan_weight + priority_cost)
 
         logger.debug("[DEBUG] priority_weights=%s", request.priority_weights)
 
@@ -373,209 +375,4 @@ class CpSatSolver:
 
 
 if __name__ == "__main__":
-    request = {
-        "horizon_hours": 100,
-        "priority_weights": {
-            "P1_load_cart": 100.0,
-            "P1_move_to_pipettor": 1.0,
-        },  # 若无则为None
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 2},
-            {"id": "track_main", "capability": "single_lane_track", "capacity": 1},
-        ],
-        "tasks": [
-            {
-                "id": "P1_load_cart",
-                "duration_hours": 3,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P1_move_to_pipettor",
-                "duration_hours": 7,
-                "required_capabilities": {"maglev_cart": 1, "single_lane_track": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P1_unload_cart",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P2_load_cart",
-                "duration_hours": 4,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P2_move_to_reader",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1, "single_lane_track": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P2_unload_cart",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-        ],
-        "precedence_pairs": [
-            ["P1_load_cart", "P1_move_to_pipettor"],
-            ["P1_move_to_pipettor", "P1_unload_cart"],
-            ["P2_load_cart", "P2_move_to_reader"],
-            ["P2_move_to_reader", "P2_unload_cart"],
-        ],
-    }
-
-    # request = {
-    #     "horizon_hours": 11,
-    #     "priority_weights": {"makespan": 1.0},
-    #     "resources": [
-    #         {"id": "machine_0", "capability": "milling", "capacity": 1},
-    #         {"id": "machine_1", "capability": "drilling", "capacity": 1},
-    #         {"id": "machine_2", "capability": "grinding", "capacity": 1},
-    #     ],
-    #     "tasks": [
-    #         {
-    #             "id": "j0_op0",
-    #             "duration_hours": 3,
-    #             "required_capability": "milling",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j0_op1",
-    #             "duration_hours": 2,
-    #             "required_capability": "drilling",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j0_op2",
-    #             "duration_hours": 2,
-    #             "required_capability": "grinding",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j1_op0",
-    #             "duration_hours": 2,
-    #             "required_capability": "milling",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j1_op1",
-    #             "duration_hours": 1,
-    #             "required_capability": "grinding",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j1_op2",
-    #             "duration_hours": 4,
-    #             "required_capability": "drilling",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j2_op0",
-    #             "duration_hours": 4,
-    #             "required_capability": "drilling",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #         {
-    #             "id": "j2_op1",
-    #             "duration_hours": 3,
-    #             "required_capability": "grinding",
-    #             "earliest_start_ms": 0,
-    #             "deadline_ms": None,
-    #         },
-    #     ],
-    #     "precedence_pairs": [
-    #         ["j0_op0", "j0_op1"],
-    #         ["j0_op1", "j0_op2"],
-    #         ["j1_op0", "j1_op1"],
-    #         ["j1_op1", "j1_op2"],
-    #         ["j2_op0", "j2_op1"],
-    #     ],
-    # }
-
-    import json
-    from typing import Union, IO
-    from models_base import Resource
-
-    def build_request_from_json(source: Union[str, dict, IO]) -> ScheduleRequest:
-        """
-        从 JSON 构建 3 机器 Job-Shop 调度请求。
-
-        参数 source 可以是：
-        - JSON 文件路径 (str, 以 .json 结尾)
-        - JSON 字符串 (str)
-        - 已解析的 dict
-        - 文件对象 (IO)
-
-        返回的 ScheduleRequest 与 build_request() 完全一致。
-        """
-        # ---- 1. 解析为 dict ----
-        if isinstance(source, dict):
-            data = source
-        elif isinstance(source, str):
-            if source.strip().startswith("{"):
-                data = json.loads(source)  # JSON 字符串
-            else:
-                with open(source, "r", encoding="utf-8") as f:
-                    data = json.load(f)  # 文件路径
-        else:
-            data = json.load(source)  # 文件对象
-
-        # ---- 2. 构建 Resources ----
-        resources = [
-            Resource(
-                id=r["id"],
-                capability=r["capability"],
-                capacity=r["capacity"],
-            )
-            for r in data["resources"]
-        ]
-
-        # ---- 3. 构建 Tasks ----
-        tasks = [
-            Task(
-                id=t["id"],
-                duration_ms=t["duration_hours"],
-                required_capabilities=t["required_capabilities"],
-                earliest_start_ms=t["earliest_start_ms"],
-                deadline_ms=t["deadline_ms"],
-            )
-            for t in data["tasks"]
-        ]
-
-        # ---- 4. 构建 Precedence Pairs（转成 tuple，与原代码一致）----
-        precedence_pairs = [tuple(pair) for pair in data["precedence_pairs"]]
-
-        # ---- 5. 组装 ScheduleRequest ----
-        return ScheduleRequest(
-            tasks=tasks,
-            precedence_pairs=precedence_pairs,
-            resources=resources,
-            horizon_ms=data["horizon_hours"],
-            priority_weights=data["priority_weights"],
-        )
-
-    request = build_request_from_json(request)
-    solver = CpSatSolver()
-    result = solver.solve(request=request)
-
-    print(result.status)
-    print(result.makespan_ms)
-    print(result)
+    pass

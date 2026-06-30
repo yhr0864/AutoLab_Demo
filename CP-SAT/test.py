@@ -68,25 +68,25 @@ def run_all():
                 ), f"期望 makespan={expect['makespan_hours']}h, 实际 {got}h"
             if "note" in expect:
                 print(f"  note: {expect['note']}")
-            print("  ✅ PASS")
+            print("  [PASS]")
 
         except SchedulingInfeasibleError as e:
             if expect.get("raises") == "SchedulingInfeasibleError":
-                print(f"  ✅ PASS (按预期抛出 INFEASIBLE: {e})")
+                print(f"  [PASS] (按预期抛出 INFEASIBLE: {e})")
             else:
-                print(f"  ❌ FAIL (意外 INFEASIBLE: {e})")
+                print(f"  [FAIL] (意外 INFEASIBLE: {e})")
 
         except SchedulingTimeoutNoSolution as e:
             if expect.get("raises") == "SchedulingTimeoutNoSolution":
-                print(f"  ✅ PASS (按预期抛出 TIMEOUT: {e})")
+                print(f"  [PASS] (按预期抛出 TIMEOUT: {e})")
             else:
-                print(f"  ❌ FAIL (意外 TIMEOUT: {e})")
+                print(f"  [FAIL] (意外 TIMEOUT: {e})")
 
         except AssertionError as e:
-            print(f"  ❌ FAIL (断言失败: {e})")
+            print(f"  [FAIL] (断言失败: {e})")
 
         except Exception as e:
-            print(f"  ❌ ERROR (未预期异常: {type(e).__name__}: {e})")
+            print(f"  [ERROR] (未预期异常: {type(e).__name__}: {e})")
 
 
 # ============================================================
@@ -118,18 +118,18 @@ def run_emergency_test():
         print(f"  status   = {result.status}")
         print(f"  makespan = {result.makespan_ms / HOUR_MS:.2f}h")
         if result.status == "EMERGENCY":
-            print("  ✅ PASS (成功触发 EMERGENCY 松弛求解)")
+            print("  [PASS] (成功触发 EMERGENCY 松弛求解)")
         elif result.status in ("OPTIMAL", "FEASIBLE"):
             print(
-                "  ⚠️ 主求解太快完成了，没触发 EMERGENCY，"
+                "  [WARN] 主求解太快完成了，没触发 EMERGENCY，"
                 "请把 time_budget_s 调更小或加大任务规模"
             )
         else:
-            print(f"  ⚠️ 得到 {result.status}，非预期")
+            print(f"  [WARN] 得到 {result.status}，非预期")
     except SchedulingTimeoutNoSolution as e:
-        print(f"  ⚠️ 应急也失败（fallback_budget 太小？）: {e}")
+        print(f"  [WARN] 应急也失败（fallback_budget 太小？）: {e}")
     except Exception as e:
-        print(f"  ❌ ERROR: {type(e).__name__}: {e}")
+        print(f"  [ERROR] {type(e).__name__}: {e}")
 
 
 def run_cached_test():
@@ -153,7 +153,7 @@ def run_cached_test():
             f"makespan={cached.makespan_ms / HOUR_MS:.2f}h"
         )
     except Exception as e:
-        print(f"  ❌ 预热求解失败，无法继续: {e}")
+        print(f"  [ERROR] 预热求解失败，无法继续: {e}")
         return
 
     # 第二步：极小预算重跑 + 传入缓存
@@ -166,13 +166,13 @@ def run_cached_test():
                 result.assignments is cached.assignments
                 or result.makespan_ms == cached.makespan_ms
             )
-            print("  ✅ PASS (成功返回 CACHED 缓存解)")
+            print("  [PASS] (成功返回 CACHED 缓存解)")
         elif result.status in ("OPTIMAL", "FEASIBLE"):
-            print("  ⚠️ 主求解太快了，没触发超时，请调小 time_budget_s")
+            print("  [WARN] 主求解太快了，没触发超时，请调小 time_budget_s")
         else:
-            print(f"  ⚠️ 得到 {result.status}，非预期")
+            print(f"  [WARN] 得到 {result.status}，非预期")
     except Exception as e:
-        print(f"  ❌ ERROR: {type(e).__name__}: {e}")
+        print(f"  [ERROR] {type(e).__name__}: {e}")
 
 
 def run_priority_test():
@@ -191,9 +191,9 @@ def run_priority_test():
     print(f"  normal.start = {starts['normal'] / HOUR_MS:.2f}h")
 
     if starts["urgent"] < starts["normal"]:
-        print("  ✅ PASS (高权重 urgent 被优先调度)")
+        print("  [PASS] (高权重 urgent 被优先调度)")
     else:
-        print("  ❌ FAIL (优先级未生效，检查 priority_cost 目标)")
+        print("  [FAIL] (优先级未生效，检查 priority_cost 目标)")
 
 
 # ============================================================

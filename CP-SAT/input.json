@@ -1,0 +1,225 @@
+{
+  "batch_id": "batch-20260701-001",
+  "trigger": "manual",
+ 
+  "devices": [
+    {"device_id":"pipette-1",    "device_type":"pipette",      "state":"idle","duration":300},
+    {"device_id":"pipette-2",    "device_type":"pipette",      "state":"idle","duration":300},
+    {"device_id":"pipette-3",    "device_type":"pipette",      "state":"idle","duration":300},
+    {"device_id":"PCR-1",        "device_type":"PCR",          "state":"idle","duration":3600},
+    {"device_id":"PCR-2",        "device_type":"PCR",          "state":"idle","duration":3600},
+    {"device_id":"PCR-3",        "device_type":"PCR",          "state":"idle","duration":3600},
+    {"device_id":"PCR-4",        "device_type":"PCR",          "state":"idle","duration":3600},
+    {"device_id":"PCR-5",        "device_type":"PCR",          "state":"busy","duration":3600,
+     "busy_until": [{"start_ts":1751961600,"end_ts":1751965200}]},
+    {"device_id":"centrifuge-1", "device_type":"centrifuge",   "state":"idle","duration":300},
+    {"device_id":"centrifuge-2", "device_type":"centrifuge",   "state":"idle","duration":300},
+    {"device_id":"plate_reader-1","device_type":"plate_reader","state":"idle","duration":900},
+    {"device_id":"plate_reader-2","device_type":"plate_reader","state":"idle","duration":900},
+    {"device_id":"incubator-1",  "device_type":"incubator",    "state":"idle","duration":1800},
+    {"device_id":"incubator-2",  "device_type":"incubator",    "state":"idle","duration":1800},
+    {"device_id":"incubator-3",  "device_type":"incubator",    "state":"idle","duration":2700},
+    {"device_id":"incubator-4",  "device_type":"incubator",    "state":"idle","duration":2700},
+    {"device_id":"washer-1",     "device_type":"washer",       "state":"idle","duration":120},
+    {"device_id":"washer-2",     "device_type":"washer",       "state":"idle","duration":120},
+    {"device_id":"shaker-1",     "device_type":"shaker",       "state":"idle","duration":600},
+    {"device_id":"shaker-2",     "device_type":"shaker",       "state":"idle","duration":300},
+    {"device_id":"sealer-1",     "device_type":"sealer",       "state":"idle","duration":60}
+  ],
+ 
+  "tasks": [
+    {
+      "task_id": "wf-001.n-1",
+      "priority": 50,
+      "depends_on": [],
+      "eligible_devices": {"pipette": ["pipette-1","pipette-2"]},
+      "operations": 2
+    },
+    {
+      "task_id": "wf-001.n-2",
+      "priority": 50,
+      "depends_on": ["wf-001.n-1"],
+      "eligible_devices": {"PCR": ["PCR-1","PCR-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-001.n-3",
+      "priority": 50,
+      "depends_on": ["wf-001.n-2"],
+      "eligible_devices": {"centrifuge": ["centrifuge-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-001.n-4",
+      "priority": 50,
+      "depends_on": ["wf-001.n-3"],
+      "eligible_devices": {"incubator": ["incubator-1","incubator-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-001.n-5",
+      "priority": 50,
+      "depends_on": ["wf-001.n-4"],
+      "eligible_devices": {"washer": ["washer-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-001.n-6",
+      "priority": 50,
+      "depends_on": ["wf-001.n-5"],
+      "eligible_devices": {"shaker": ["shaker-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-001.n-7",
+      "priority": 50,
+      "depends_on": ["wf-001.n-6"],
+      "eligible_devices": {"plate_reader": ["plate_reader-1","plate_reader-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-001.n-8",
+      "priority": 50,
+      "depends_on": ["wf-001.n-7"],
+      "eligible_devices": {"sealer": ["sealer-1"]},
+      "operations": 1
+    },
+ 
+    {
+      "task_id": "wf-002.n-1",
+      "priority": 50,
+      "depends_on": [],
+      "eligible_devices": {"pipette": ["pipette-1","pipette-2"]},
+      "operations": 2
+    },
+    {
+      "task_id": "wf-002.n-2",
+      "priority": 50,
+      "depends_on": ["wf-002.n-1"],
+      "eligible_devices": {"PCR": ["PCR-1","PCR-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-002.n-3",
+      "priority": 50,
+      "depends_on": ["wf-002.n-2"],
+      "eligible_devices": {"centrifuge": ["centrifuge-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-002.n-4",
+      "priority": 50,
+      "depends_on": ["wf-002.n-3"],
+      "eligible_devices": {"incubator": ["incubator-1","incubator-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-002.n-5",
+      "priority": 50,
+      "depends_on": ["wf-002.n-4"],
+      "eligible_devices": {"washer": ["washer-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-002.n-6",
+      "priority": 50,
+      "depends_on": ["wf-002.n-5"],
+      "eligible_devices": {"shaker": ["shaker-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-002.n-7",
+      "priority": 50,
+      "depends_on": ["wf-002.n-6"],
+      "eligible_devices": {"plate_reader": ["plate_reader-1","plate_reader-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-002.n-8",
+      "priority": 50,
+      "depends_on": ["wf-002.n-7"],
+      "eligible_devices": {"sealer": ["sealer-1"]},
+      "operations": 1
+    },
+ 
+    {
+      "task_id": "wf-003.n-1",
+      "priority": 30,
+      "depends_on": [],
+      "eligible_devices": {"pipette": ["pipette-3"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-003.n-2",
+      "priority": 30,
+      "depends_on": ["wf-003.n-1"],
+      "eligible_devices": {"incubator": ["incubator-3","incubator-4"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-003.n-3",
+      "priority": 30,
+      "depends_on": ["wf-003.n-2"],
+      "eligible_devices": {"washer": ["washer-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-003.n-4",
+      "priority": 30,
+      "depends_on": ["wf-003.n-3"],
+      "eligible_devices": {"shaker": ["shaker-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-003.n-5",
+      "priority": 30,
+      "depends_on": ["wf-003.n-4"],
+      "eligible_devices": {"plate_reader": ["plate_reader-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-003.n-6",
+      "priority": 30,
+      "depends_on": ["wf-003.n-5"],
+      "eligible_devices": {"sealer": ["sealer-1"]},
+      "operations": 1
+    },
+ 
+    {
+      "task_id": "wf-004.n-1",
+      "priority": 100,
+      "depends_on": [],
+      "eligible_devices": {"pipette": ["pipette-1","pipette-2"]},
+      "operations": 2
+    },
+    {
+      "task_id": "wf-004.n-2",
+      "priority": 100,
+      "depends_on": ["wf-004.n-1"],
+      "eligible_devices": {"centrifuge": ["centrifuge-1"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-004.n-3",
+      "priority": 100,
+      "depends_on": ["wf-004.n-2"],
+      "eligible_devices": {"incubator": ["incubator-1","incubator-2"]},
+      "operations": 1
+    },
+    {
+      "task_id": "wf-004.n-4",
+      "priority": 100,
+      "depends_on": ["wf-004.n-3"],
+      "eligible_devices": {"plate_reader": ["plate_reader-1"]},
+      "operations": 1
+    }
+  ],
+ 
+  "options": {
+    "timeout_seconds": 5,
+    "fallback_timeout_seconds": 0.2,
+    "num_search_workers": 4,
+    "makespan_weight": 10.0,
+    "priority_weight": 20.0
+  }
+}

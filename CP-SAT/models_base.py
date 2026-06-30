@@ -3,17 +3,16 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-
 # ─────────────────────────────────────────────
 # 枚举
 # ─────────────────────────────────────────────
-class TaskState(Enum):
-    PENDING = auto()
-    READY = auto()
-    RUNNING = auto()
-    COMPLETED = auto()
-    FAILED = auto()
-    MIGRATED = auto()
+# class TaskState(Enum):
+#     PENDING = auto()
+#     READY = auto()
+#     RUNNING = auto()
+#     COMPLETED = auto()
+#     FAILED = auto()
+#     MIGRATED = auto()
 
 
 class DeviceState(Enum):
@@ -22,10 +21,19 @@ class DeviceState(Enum):
     FAULTED = auto()
 
 
-class AlertLevel(Enum):
-    INFO = "INFO"
-    WARNING = "WARNING"
-    CRITICAL = "CRITICAL"
+# class AlertLevel(Enum):
+#     INFO = "INFO"
+#     WARNING = "WARNING"
+#     CRITICAL = "CRITICAL"
+
+
+# ─────────────────────────────────────────────
+# 物理设备实体（分配层专用）
+# ─────────────────────────────────────────────
+@dataclass
+class BusyInterval:
+    start_ms: int
+    end_ms: int
 
 
 # ─────────────────────────────────────────────
@@ -35,8 +43,10 @@ class AlertLevel(Enum):
 class Task:
     id: str
     duration_ms: int
-    # 如 {"maglev_cart": 1,"single_lane_track": 1}，只描述需求，不绑定物理设备
+    # 各能力需求量，如 {"PCR": 1}
     required_capabilities: Dict[str, int]
+    # ✅ 各能力的可用具体设备白名单，如 {"PCR": ["PCR-1","PCR-2"]}
+    eligible_devices: Dict[str, List[str]] = field(default_factory=dict)
     earliest_start_ms: int = 0
     deadline_ms: Optional[int] = None
 
@@ -80,51 +90,6 @@ class PlannedWindow:
     window_slack_ms: int  # 允许推迟的最大余量（ms）
 
 
-# @dataclass
-# class DispatchRecord:
-#     """
-#     战术层的完整任务分配记录。
-
-#     包含战略层下发的计划信息（planned_*），
-#     以及任务实际执行过程中产生的运行时数据（actual_*、state、migrate_count）。
-#     两者的差值即为漂移量（drift），用于衡量执行与计划的偏差程度。
-#     """
-
-#     task_id: str
-#     required_capabilities: Dict[str, int]  # 能力需求量（透传）
-#     planned_start_ms: int  # 战略层计划的开始时刻（绝对时间戳，ms）
-#     planned_end_ms: int
-#     window_slack_ms: int  # 允许推迟的最大余量（ms），继承自 PlannedWindow
-#     actual_start_ms: Optional[int] = (
-#         None  # 任务实际开始时刻（绝对时间戳，ms），未开始时为 None
-#     )
-#     actual_end_ms: Optional[int] = None
-#     state: TaskState = TaskState.READY  # 任务当前状态：READY / RUNNING / DONE / FAILED
-#     migrate_count: int = 0  # 任务被迁移的次数，每次重规划后换设备执行则 +1
-
-#     @property
-#     def start_drift_ms(self) -> int:
-#         """
-#         开始时刻漂移量（ms）。
-#         实际开始时刻与计划开始时刻的绝对偏差，
-#         未开始时返回 0。
-#         """
-#         if self.actual_start_ms is None:
-#             return 0
-#         return abs(self.actual_start_ms - self.planned_start_ms)
-
-#     @property
-#     def end_drift_ms(self) -> int:
-#         """
-#         结束时刻漂移量（ms）。
-#         实际结束时刻与计划结束时刻的绝对偏差，
-#         未结束时返回 0。
-#         """
-#         if self.actual_end_ms is None:
-#             return 0
-#         return abs(self.actual_end_ms - self.planned_end_ms)
-
-
 @dataclass
 class ScheduleResult:
     status: str  # OPTIMAL / FEASIBLE / CACHED / EMERGENCY
@@ -133,32 +98,76 @@ class ScheduleResult:
     makespan_ms: int = 0
 
 
-# ─────────────────────────────────────────────
-# 设备运行时状态
-# ─────────────────────────────────────────────
-# @dataclass
-# class DeviceStatus:
-#     id: str
-#     capability: str
-#     state: DeviceState = DeviceState.IDLE
-#     available_at_ms: int = 0
-#     current_task_id: Optional[str] = None
-
-#     def is_idle(self) -> bool:
-#         return self.state == DeviceState.IDLE
-
-#     def is_faulted(self) -> bool:
-#         return self.state == DeviceState.FAULTED
-
-
-# ─────────────────────────────────────────────
-# 告警事件
-# ─────────────────────────────────────────────
 @dataclass
-class AlertEvent:
-    level: AlertLevel
-    source: str
-    message: str
-    task_id: Optional[str] = None
-    device_id: Optional[str] = None
-    timestamp_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+class Device:
+    """
+    物理设备实体。
+    device_type 对应调度层的 capability。
+    """
+
+    device_id: str
+    device_type: str  # == capability
+    state: DeviceState = DeviceState.IDLE
+    duration_ms: int = 0  # 默认处理时长（元数据参考）
+    busy_until: List[BusyInterval] = field(default_factory=list)
+
+    def is_idle(self) -> bool:
+        return self.state == DeviceState.IDLE
+
+    @classmethod
+    def from_json(cls, d: dict, base_ts: int = 0) -> "Device":
+        """
+        从输入 JSON 单条记录构造设备。
+
+        Parameters
+        ----------
+        d : dict
+            形如 {"device_id":..., "device_type":..., "state":"idle"/"busy",
+                  "duration":..., "busy_until":[{"start_ts":...,"end_ts":...}]}
+        base_ts : int
+            调度起点 Unix 时间戳（秒）。
+            relative_ms = (ts - base_ts) * 1000
+        """
+        state_map = {
+            "idle": DeviceState.IDLE,
+            "busy": DeviceState.BUSY,
+            "faulted": DeviceState.FAULTED,
+        }
+        busy = []
+        for b in d.get("busy_until", []):
+            start_ms = max(0, (b["start_ts"] - base_ts) * 1000)
+            end_ms = max(0, (b["end_ts"] - base_ts) * 1000)
+            busy.append(BusyInterval(start_ms=start_ms, end_ms=end_ms))
+
+        return cls(
+            device_id=d["device_id"],
+            device_type=d["device_type"],
+            state=state_map.get(d.get("state", "idle"), DeviceState.IDLE),
+            duration_ms=d.get("duration", 0) * 1000,  # 秒 -> 毫秒
+            busy_until=busy,
+        )
+
+
+@dataclass
+class DeviceAssignment:
+    """
+    分配层输出：一个任务的某个能力槽位绑定到一台具体设备。
+    一个多能力任务会产生多条 DeviceAssignment。
+    """
+
+    task_id: str
+    device_id: str
+    device_type: str  # == capability
+    planned_start_ms: int
+    planned_end_ms: int
+
+
+@dataclass
+class AllocationResult:
+    """分配层完整输出，与 ScheduleResult 对称"""
+
+    status: str  # "SUCCESS" / "PARTIAL" / "FAILED"
+    alloc_time_ms: float
+    assignments: List[DeviceAssignment] = field(default_factory=list)
+    # 未能分配的 (task_id, capability) 列表，用于上层诊断
+    unassigned: List[Tuple[str, str]] = field(default_factory=list)

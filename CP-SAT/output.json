@@ -1,0 +1,39 @@
+{
+  "batch_id": "batch-20260701-001",
+  "status": "optimal",
+  "makespan": 8580,
+  "solver": "cpsat",
+  "message": "wf-004(p=100)优先，pipette×2合并为600s连续占用；wf-003 zone-B并行 4380s完成",
+ 
+  "assignments": [
+    {"task_id":"wf-004.n-1","device_id":"pipette-1",    "start_ts":1751965200,"end_ts":1751965800},
+    {"task_id":"wf-004.n-2","device_id":"centrifuge-1", "start_ts":1751965800,"end_ts":1751966100},
+    {"task_id":"wf-004.n-3","device_id":"incubator-1",  "start_ts":1751966100,"end_ts":1751967900},
+    {"task_id":"wf-004.n-4","device_id":"plate_reader-1","start_ts":1751967900,"end_ts":1751968800},
+ 
+    {"task_id":"wf-001.n-1","device_id":"pipette-2",    "start_ts":1751965200,"end_ts":1751965800},
+    {"task_id":"wf-001.n-2","device_id":"PCR-1",        "start_ts":1751965800,"end_ts":1751969400},
+    {"task_id":"wf-001.n-3","device_id":"centrifuge-1", "start_ts":1751969400,"end_ts":1751969700},
+    {"task_id":"wf-001.n-4","device_id":"incubator-2",  "start_ts":1751969700,"end_ts":1751971500},
+    {"task_id":"wf-001.n-5","device_id":"washer-1",     "start_ts":1751971500,"end_ts":1751971620},
+    {"task_id":"wf-001.n-6","device_id":"shaker-1",     "start_ts":1751971620,"end_ts":1751972220},
+    {"task_id":"wf-001.n-7","device_id":"plate_reader-2","start_ts":1751972220,"end_ts":1751973120},
+    {"task_id":"wf-001.n-8","device_id":"sealer-1",     "start_ts":1751973120,"end_ts":1751973180},
+ 
+    {"task_id":"wf-002.n-1","device_id":"pipette-2",    "start_ts":1751965800,"end_ts":1751966400},
+    {"task_id":"wf-002.n-2","device_id":"PCR-2",        "start_ts":1751966400,"end_ts":1751970000},
+    {"task_id":"wf-002.n-3","device_id":"centrifuge-1", "start_ts":1751970000,"end_ts":1751970300},
+    {"task_id":"wf-002.n-4","device_id":"incubator-1",  "start_ts":1751970300,"end_ts":1751972100},
+    {"task_id":"wf-002.n-5","device_id":"washer-1",     "start_ts":1751972100,"end_ts":1751972220},
+    {"task_id":"wf-002.n-6","device_id":"shaker-1",     "start_ts":1751972220,"end_ts":1751972820},
+    {"task_id":"wf-002.n-7","device_id":"plate_reader-1","start_ts":1751972820,"end_ts":1751973720},
+    {"task_id":"wf-002.n-8","device_id":"sealer-1",     "start_ts":1751973720,"end_ts":1751973780},
+ 
+    {"task_id":"wf-003.n-1","device_id":"pipette-3",    "start_ts":1751965200,"end_ts":1751965500},
+    {"task_id":"wf-003.n-2","device_id":"incubator-3",  "start_ts":1751965500,"end_ts":1751968200},
+    {"task_id":"wf-003.n-3","device_id":"washer-2",     "start_ts":1751968200,"end_ts":1751968320},
+    {"task_id":"wf-003.n-4","device_id":"shaker-2",     "start_ts":1751968320,"end_ts":1751968620},
+    {"task_id":"wf-003.n-5","device_id":"plate_reader-2","start_ts":1751968620,"end_ts":1751969520},
+    {"task_id":"wf-003.n-6","device_id":"sealer-1",     "start_ts":1751969520,"end_ts":1751969580}
+  ]
+}

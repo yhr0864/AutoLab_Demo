@@ -349,8 +349,8 @@ TEST_CASES = {
                 ),
                 "earliest_start_ms": 0,
                 # 部分任务给紧 deadline
-                "deadline_ms": 18_000_000 if i % 3 == 0 else None,
-            }  # 5h
+                "deadline_ms": 79_200_000 if i % 3 == 0 else None,
+            }  # 22h (feasible but tight for chained tasks)
             for i in range(12)
         ],
         "precedence_pairs": [[f"T{i}", f"T{i+1}"] for i in range(0, 11, 2)],
