@@ -31,6 +31,7 @@ from models_base import (
     ScheduleResult,
     PlannedWindow,
     DeviceState,
+    Task,
 )
 
 logger = logging.getLogger("DeviceAllocator")
@@ -42,11 +43,11 @@ class GreedyDeviceAllocator:
 
     分配依据：每台设备的「预计可用时刻」
         - 空闲(idle)设备            → 0（最早，优先分配）
-        - 忙碌(busy)设备            → busy_until 中最大的 end_ms
+        - 忙碌(busy)设备            → busy_until 中最大的 end_s
         - 故障(faulted)设备         → 无穷大（永不分配）
     """
 
-    def __init__(self, devices: List[Device]) -> None:
+    def __init__(self, devices: List[Device], tasks: List[Task]) -> None:
         # 按能力类型分组
         self.devices_by_cap: Dict[str, List[Device]] = defaultdict(list)
         for dev in devices:
@@ -57,6 +58,12 @@ class GreedyDeviceAllocator:
         for dev in devices:
             self.device_ready_at[dev.device_id] = self._compute_ready_at(dev)
 
+        # 任务 -> 能力 -> 白名单设备
+        self.task_eligible: Dict[str, Dict[str, List[str]]] = {}
+        if tasks:
+            for t in tasks:
+                self.task_eligible[t.id] = t.eligible_devices
+
     @staticmethod
     def _compute_ready_at(dev: Device) -> int:
         """计算设备预计可用时刻"""
@@ -65,7 +72,7 @@ class GreedyDeviceAllocator:
         if dev.state == DeviceState.IDLE and not dev.busy_until:
             return 0  # 空闲，立即可用
         # 忙碌：取最晚的 busy 结束时刻（设备可能有多端忙碌）
-        return max((b.end_ms for b in dev.busy_until), default=0)
+        return max((b.end_s for b in dev.busy_until), default=0)
 
     # ── 公共入口 ────────────────────────────────────────────
     def allocate(self, result: ScheduleResult) -> AllocationResult:
@@ -94,68 +101,91 @@ class GreedyDeviceAllocator:
                     pending.append((win, cap))
 
         # 按任务计划开始时间排序（来的顺序）
-        pending.sort(key=lambda x: x[0].planned_start_ms)
+        pending.sort(key=lambda x: x[0].planned_start_s)
 
         assignments: List[DeviceAssignment] = []
         unassigned: List[Tuple[str, str]] = []
 
-        # 记录每个 cap 队列已消耗到第几个
-        cursor: Dict[str, int] = defaultdict(int)
+        # 记录每个设备已分配的时间区间（预填初始 busy_until）
+        device_busy: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+        for dev_list in self.devices_by_cap.values():
+            for dev in dev_list:
+                for bi in dev.busy_until:
+                    device_busy[dev.device_id].append((bi.start_s, bi.end_s))
 
         for win, cap in pending:
+            # 获取任务对该能力的设备白名单
+            eligible_ids = self.task_eligible.get(win.task_id, {}).get(cap, [])
+            if eligible_ids:
+                eligible_set = set(eligible_ids)
+            else:
+                # 回退：该能力的所有设备
+                eligible_set = {d.device_id for d in self.devices_by_cap.get(cap, [])}
+
             queue = pool.get(cap, [])
-            idx = cursor[cap]
 
-            # 跳过故障设备（ready_at = 2**62）
-            while idx < len(queue) and queue[idx][0] >= 2**62:
-                idx += 1
+            task_start = win.planned_start_s
+            task_end = win.planned_end_s
 
-            if idx >= len(queue):
-                # 该能力的设备已全部分配完（本轮无更多设备）
+            assigned = False
+            for ready_at, device in queue:
+                # 跳过故障设备（ready_at = 2**62）
+                if ready_at >= 2**62:
+                    continue
+                if device.device_id not in eligible_set:
+                    continue
+
+                # 检查时间冲突：任务区间与设备已有分配不能重叠
+                conflict = False
+                for bs, be in device_busy[device.device_id]:
+                    if task_start < be and task_end > bs:
+                        conflict = True
+                        break
+
+                if not conflict:
+                    device_busy[device.device_id].append((task_start, task_end))
+                    assignments.append(
+                        DeviceAssignment(
+                            task_id=win.task_id,
+                            device_id=device.device_id,
+                            device_type=cap,
+                            planned_start_s=task_start,
+                            planned_end_s=task_end,
+                        )
+                    )
+                    logger.debug(
+                        "分配 task=%s cap=%s -> %s [%ds, %ds]",
+                        win.task_id,
+                        cap,
+                        device.device_id,
+                        task_start ,
+                        task_end ,
+                    )
+                    assigned = True
+                    break
+
+            if not assigned:
                 logger.warning(
-                    "任务 %s 能力 '%s' 无可用设备（设备已分配完）",
+                    "任务 %s 能力 '%s' 无可用设备（设备不在白名单或时间冲突）",
                     win.task_id,
                     cap,
                 )
                 unassigned.append((win.task_id, cap))
-                continue
 
-            ready_at, device = queue[idx]
-            cursor[cap] = idx + 1  # 该设备本轮已用，指针后移
-
-            assignments.append(
-                DeviceAssignment(
-                    task_id=win.task_id,
-                    device_id=device.device_id,
-                    device_type=cap,
-                    # 计划时序透传自调度层（分配层不改时间）
-                    planned_start_ms=win.planned_start_ms,
-                    planned_end_ms=win.planned_end_ms,
-                )
-            )
-            logger.debug(
-                "分配 task=%s cap=%s -> %s（设备预计可用时刻=%d）",
-                win.task_id,
-                cap,
-                device.device_id,
-                ready_at,
-            )
-
-        alloc_ms = (time.perf_counter() - t0) * 1000
-
+        alloc_s = (time.perf_counter() - t0)
         status = "SUCCESS" if not unassigned else "PARTIAL" if assignments else "FAILED"
 
         logger.info(
-            "设备分配完成：状态=%s 成功=%d 失败=%d 耗时=%.2fms",
+            "设备分配完成：状态=%s 成功=%d 失败=%d 耗时=%.2fs",
             status,
             len(assignments),
             len(unassigned),
-            alloc_ms,
+            alloc_s,
         )
 
         return AllocationResult(
             status=status,
-            alloc_time_ms=alloc_ms,
+            alloc_time_s=alloc_s,
             assignments=assignments,
             unassigned=unassigned,
         )

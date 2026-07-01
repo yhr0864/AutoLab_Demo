@@ -6,7 +6,7 @@
   "message": "wf-004(p=100)优先，pipette×2合并为600s连续占用；wf-003 zone-B并行 4380s完成",
  
   "assignments": [
-    {"task_id":"wf-004.n-1","device_id":"pipette-1",    "start_ts":1751965200,"end_ts":1751965800},
+    {"task_id":"wf-004.n-1","device_id":"pipette-1",    "start_ts":1751965200,"end_ts":1751965800, "operations": 2},
     {"task_id":"wf-004.n-2","device_id":"centrifuge-1", "start_ts":1751965800,"end_ts":1751966100},
     {"task_id":"wf-004.n-3","device_id":"incubator-1",  "start_ts":1751966100,"end_ts":1751967900},
     {"task_id":"wf-004.n-4","device_id":"plate_reader-1","start_ts":1751967900,"end_ts":1751968800},

@@ -1,359 +1,199 @@
 # ============================================================
-# CP-SAT 调度器测试用例集
+# CP-SAT 调度器测试用例集（input.json 格式）
 # 覆盖：OPTIMAL / FEASIBLE / EMERGENCY / CACHED / INFEASIBLE
 #       + 优先级权重 / 多能力任务 / DAG 依赖 / 容量约束 / 边界情况
+#
+# 设备时长统一为 3600s（1h），任务 operations = duration_hours
 # ============================================================
+
+# 共享设备工厂
+def _MC(n):
+    return [{"device_id": f"carts-{i}", "device_type": "maglev_cart", "state": "idle", "duration": 3600} for i in range(n)]
+
+def _TR(n):
+    return [{"device_id": f"track-{i}", "device_type": "single_lane_track", "state": "idle", "duration": 3600} for i in range(n)]
+
+def _RD(n):
+    return [{"device_id": f"reader-{i}", "device_type": "plate_reader", "state": "idle", "duration": 3600} for i in range(n)]
 
 TEST_CASES = {
     # --------------------------------------------------------
-    # TC01: 基础串行 DAG（你的原始用例）
-    # 目标: 验证 OPTIMAL 解、多能力任务、基本 precedence
-    # 预期: status=OPTIMAL, makespan 合理（两条链可部分并行）
+    # TC01: 基础串行 DAG（两条链，共享 cart×2 + track×1）
+    # 预期: status=OPTIMAL
     # --------------------------------------------------------
     "TC01_basic_two_chains": {
-        "horizon_hours": 100,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 2},
-            {"id": "track_main", "capability": "single_lane_track", "capacity": 1},
-        ],
+        "devices": _MC(2) + _TR(1),
         "tasks": [
-            {
-                "id": "P1_load_cart",
-                "duration_hours": 3,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P1_move_to_pipettor",
-                "duration_hours": 7,
-                "required_capabilities": {"maglev_cart": 1, "single_lane_track": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P1_unload_cart",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P2_load_cart",
-                "duration_hours": 4,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P2_move_to_reader",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1, "single_lane_track": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "P2_unload_cart",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "P1_load_cart",       "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 3},
+            {"task_id": "P1_move_to_pipettor", "priority": 1, "depends_on": ["P1_load_cart"],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"], "single_lane_track": ["track-0"]}, "operations": 7},
+            {"task_id": "P1_unload_cart",      "priority": 1, "depends_on": ["P1_move_to_pipettor"],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 2},
+            {"task_id": "P2_load_cart",        "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 4},
+            {"task_id": "P2_move_to_reader",   "priority": 1, "depends_on": ["P2_load_cart"],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"], "single_lane_track": ["track-0"]}, "operations": 5},
+            {"task_id": "P2_unload_cart",      "priority": 1, "depends_on": ["P2_move_to_reader"],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 2},
         ],
-        "precedence_pairs": [
-            ["P1_load_cart", "P1_move_to_pipettor"],
-            ["P1_move_to_pipettor", "P1_unload_cart"],
-            ["P2_load_cart", "P2_move_to_reader"],
-            ["P2_move_to_reader", "P2_unload_cart"],
-        ],
+        "horizon_s": 360000,
         "_expect": {"status": "OPTIMAL"},
     },
     # --------------------------------------------------------
     # TC02: 单任务最小用例
-    # 目标: 验证最简单路径，边界鲁棒性
     # 预期: status=OPTIMAL, makespan=5h
     # --------------------------------------------------------
     "TC02_single_task": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [
-            {
-                "id": "T1",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "T1", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 5},
         ],
-        "precedence_pairs": [],
+        "horizon_s": 180000,
         "_expect": {"status": "OPTIMAL", "makespan_hours": 5},
     },
     # --------------------------------------------------------
-    # TC03: 容量并行测试
-    # 目标: 验证 capacity=2 时两任务可同时跑
-    # 预期: 两个独立任务并行，makespan=max(单任务) 而非求和
+    # TC03: 容量并行测试（capacity=2 两任务并行）
+    # 预期: makespan = max(6,6) = 6h
     # --------------------------------------------------------
     "TC03_capacity_parallel": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 2},
-        ],
+        "devices": _MC(2),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 6,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "B",
-                "duration_hours": 6,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "A", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 6},
+            {"task_id": "B", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 6},
         ],
-        "precedence_pairs": [],
-        "_expect": {"status": "OPTIMAL", "makespan_hours": 6},  # 并行
+        "horizon_s": 180000,
+        "_expect": {"status": "OPTIMAL", "makespan_hours": 6},
     },
     # --------------------------------------------------------
-    # TC04: 容量受限串行
-    # 目标: 验证 capacity=1 时同能力任务必须串行
+    # TC04: 容量受限串行（capacity=1 两任务必须串行）
     # 预期: makespan = 6+6 = 12h
     # --------------------------------------------------------
     "TC04_capacity_serial": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 6,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "B",
-                "duration_hours": 6,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "A", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 6},
+            {"task_id": "B", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 6},
         ],
-        "precedence_pairs": [],
-        "_expect": {"status": "OPTIMAL", "makespan_hours": 12},  # 串行
+        "horizon_s": 180000,
+        "_expect": {"status": "OPTIMAL", "makespan_hours": 12},
     },
     # --------------------------------------------------------
     # TC05: 单任务需求超容量（demand=2, capacity=2）
-    # 目标: 验证 demand 大于 1 的累积约束
-    # 预期: 两个 demand=2 任务必须串行（各自吃满 2 个槽）
+    # 预期: 两任务各吃满 2 槽，必须串行，makespan=4+3=7h
     # --------------------------------------------------------
     "TC05_demand_equals_capacity": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 2},
-        ],
+        "devices": _MC(2),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 4,
-                "required_capabilities": {"maglev_cart": 2},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "B",
-                "duration_hours": 3,
-                "required_capabilities": {"maglev_cart": 2},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "A", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 4,
+             "demand": {"maglev_cart": 2}},
+            {"task_id": "B", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 3,
+             "demand": {"maglev_cart": 2}},
         ],
-        "precedence_pairs": [],
-        "_expect": {"status": "OPTIMAL", "makespan_hours": 7},  # 4+3 串行
+        "horizon_s": 180000,
+        "_expect": {"status": "OPTIMAL", "makespan_hours": 7},
     },
     # --------------------------------------------------------
     # TC06: 优先级权重测试
-    # 目标: 验证高权重任务被优先调度（更早 start）
-    # 预期: 高权重 urgent 任务的 start 应早于 normal
+    # 预期: 高权重 urgent 的 start 早于 normal
     # --------------------------------------------------------
     "TC06_priority_weights": {
-        "horizon_hours": 50,
-        "priority_weights": {"urgent": 100.0, "normal": 1.0},
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [
-            {
-                "id": "normal",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "urgent",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "urgent", "priority": 100, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 5},
+            {"task_id": "normal", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 5},
         ],
-        "precedence_pairs": [],
+        "horizon_s": 180000,
         "_expect": {"status": "OPTIMAL", "note": "urgent.start < normal.start"},
     },
     # --------------------------------------------------------
     # TC07: earliest_start 约束
-    # 目标: 验证任务不能早于 earliest_start_ms 开始
     # 预期: B.start >= 10h
     # --------------------------------------------------------
     "TC07_earliest_start": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 2},
-        ],
+        "devices": _MC(2),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 3,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "B",
-                "duration_hours": 3,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 36_000_000,
-                "deadline_ms": None,
-            },  # 10h
+            {"task_id": "A", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 3,
+             "earliest_start_s": 0},
+            {"task_id": "B", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0", "carts-1"]}, "operations": 3,
+             "earliest_start_s": 36000},  # 10h
         ],
-        "precedence_pairs": [],
-        "_expect": {"status": "OPTIMAL", "note": "B.planned_start_ms >= 36000000"},
+        "horizon_s": 180000,
+        "_expect": {"status": "OPTIMAL", "note": "B.planned_start_s >= 36000000"},
     },
     # --------------------------------------------------------
     # TC08: deadline 可满足
-    # 目标: 验证 deadline 约束在可行范围内
-    # 预期: OPTIMAL, 任务在 deadline 前完成
+    # 预期: OPTIMAL, 任务在 10h deadline 前完成
     # --------------------------------------------------------
     "TC08_deadline_feasible": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": 36_000_000,
-            },  # 10h deadline
+            {"task_id": "A", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 5,
+             "deadline_s": 36000},  # 10h
         ],
-        "precedence_pairs": [],
-        "_expect": {
-            "status": "OPTIMAL",
-            "note": "planned_end_ms <= 36000000, window_slack 约 5h",
-        },
+        "horizon_s": 180000,
+        "_expect": {"status": "OPTIMAL", "note": "planned_end_s <= 36000000, window_slack 约 5h"},
     },
     # --------------------------------------------------------
-    # TC09: INFEASIBLE - deadline 过紧
-    # 目标: 验证真正无解时抛 SchedulingInfeasibleError
+    # TC09: INFEASIBLE - deadline 过紧（需10h 但 deadline=2h）
     # 预期: raise SchedulingInfeasibleError
     # --------------------------------------------------------
     "TC09_infeasible_tight_deadline": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 10,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": 7_200_000,
-            },  # 2h deadline，需10h
+            {"task_id": "A", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 10,
+             "deadline_s": 7200},  # 2h
         ],
-        "precedence_pairs": [],
+        "horizon_s": 180000,
         "_expect": {"raises": "SchedulingInfeasibleError"},
     },
     # --------------------------------------------------------
     # TC10: INFEASIBLE - DAG 成环
-    # 目标: 验证循环依赖被检测为无解
     # 预期: raise SchedulingInfeasibleError
     # --------------------------------------------------------
     "TC10_infeasible_cycle": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [
-            {
-                "id": "A",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "B",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "A", "priority": 1, "depends_on": ["B"],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 2},
+            {"task_id": "B", "priority": 1, "depends_on": ["A"],
+             "eligible_devices": {"maglev_cart": ["carts-0"]}, "operations": 2},
         ],
-        "precedence_pairs": [["A", "B"], ["B", "A"]],  # 成环
+        "horizon_s": 180000,
         "_expect": {"raises": "SchedulingInfeasibleError"},
     },
     # --------------------------------------------------------
-    # TC11: EMERGENCY - deadline 过紧但松弛后可解
-    # 目标: 验证应急松弛求解（去掉 deadline 后可行）
-    # 用法: 配合极小 time_budget_s 强制主求解 UNKNOWN，
-    #       或 deadline 矛盾但松弛后可行
-    # 预期: status=EMERGENCY（需 last_feasible=None）
-    # 说明: deadline 矛盾会被判 INFEASIBLE 而非 UNKNOWN，
-    #       真正触发 EMERGENCY 需主求解超时，见下方 runner 说明
+    # TC11: EMERGENCY - 较复杂场景，主求解超时后松弛可解
     # --------------------------------------------------------
     "TC11_emergency_relax_deadline": {
-        "horizon_hours": 100,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 2},
-            {"id": "track", "capability": "single_lane_track", "capacity": 1},
-        ],
+        "devices": _MC(2) + _TR(1),
         "tasks": [
-            # 构造一个较复杂、需要时间求解的场景
-            {
-                "id": f"T{i}",
-                "duration_hours": 3 + (i % 5),
-                "required_capabilities": (
-                    {"maglev_cart": 1}
-                    if i % 2 == 0
-                    else {"maglev_cart": 1, "single_lane_track": 1}
-                ),
-                "earliest_start_ms": 0,
-                # 部分任务给紧 deadline
-                "deadline_ms": 79_200_000 if i % 3 == 0 else None,
-            }  # 22h (feasible but tight for chained tasks)
+            {"task_id": f"T{i}", "priority": 1,
+             "depends_on": [f"T{i-1}"] if i % 2 == 1 else [],  # 成对链 T0→T1, T2→T3, ...
+             "eligible_devices": (
+                 {"maglev_cart": ["carts-0", "carts-1"]}
+                 if i % 2 == 0 else
+                 {"maglev_cart": ["carts-0", "carts-1"], "single_lane_track": ["track-0"]}
+             ),
+             "operations": 3 + (i % 5),
+             "deadline_s": 79200 if i % 3 == 0 else None,  # 22h
+             }
             for i in range(12)
         ],
-        "precedence_pairs": [[f"T{i}", f"T{i+1}"] for i in range(0, 11, 2)],
+        "horizon_s": 360000,
         "_expect": {
             "status_in": ["OPTIMAL", "FEASIBLE", "EMERGENCY"],
             "note": "用极小预算 + last_feasible=None 触发 EMERGENCY",
@@ -361,49 +201,33 @@ TEST_CASES = {
     },
     # --------------------------------------------------------
     # TC12: 大规模 - 触发 FEASIBLE 或超时
-    # 目标: 验证大规模下时间预算内的可行解
-    # 预期: status in [OPTIMAL, FEASIBLE]，配极小预算更易 FEASIBLE
     # --------------------------------------------------------
     "TC12_large_scale": {
-        "horizon_hours": 500,
-        "priority_weights": {
-            f"P{p}_t{s}": float(10 - p) for p in range(10) for s in range(5)
-        },
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 3},
-            {"id": "track", "capability": "single_lane_track", "capacity": 2},
-            {"id": "reader", "capability": "plate_reader", "capacity": 1},
-        ],
+        "devices": _MC(3) + _TR(2) + _RD(1),
         "tasks": [
-            {
-                "id": f"P{p}_t{s}",
-                "duration_hours": 2 + ((p + s) % 6),
-                "required_capabilities": (
-                    {"maglev_cart": 1}
-                    if s == 0
-                    else (
-                        {"maglev_cart": 1, "single_lane_track": 1}
-                        if s in (1, 3)
-                        else {"plate_reader": 1} if s == 2 else {"maglev_cart": 1}
-                    )
-                ),
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            }
+            {"task_id": f"P{p}_t{s}", "priority": float(10 - p),
+             "depends_on": [f"P{p}_t{s-1}"] if s > 0 else [],
+             "eligible_devices": (
+                 {"maglev_cart": ["carts-0", "carts-1", "carts-2"]}
+                 if s == 0 else (
+                     {"maglev_cart": ["carts-0", "carts-1", "carts-2"],
+                      "single_lane_track": ["track-0", "track-1"]}
+                     if s in (1, 3) else
+                     {"plate_reader": ["reader-0"]}
+                     if s == 2 else
+                     {"maglev_cart": ["carts-0", "carts-1", "carts-2"]}
+                 )
+             ),
+             "operations": 2 + ((p + s) % 6),
+             }
             for p in range(10)
             for s in range(5)
         ],
-        "precedence_pairs": [
-            [f"P{p}_t{s}", f"P{p}_t{s+1}"] for p in range(10) for s in range(4)
-        ],
+        "horizon_s": 1800000,  # 500h
         "_expect": {"status_in": ["OPTIMAL", "FEASIBLE"]},
     },
     # --------------------------------------------------------
-    # TC13: CACHED - 超时但有缓存
-    # 目标: 验证超时时返回 last_feasible 缓存解
-    # 用法: 先用 TC12 跑出一个解作为 last_feasible，
-    #       再用极小预算（如 0.001s）重跑，强制 UNKNOWN
-    # 预期: status=CACHED
+    # TC13: CACHED - 超时但有缓存（复用 TC12 请求 + 极小预算）
     # --------------------------------------------------------
     "TC13_cached": {
         "_reuse_request": "TC12_large_scale",
@@ -412,110 +236,266 @@ TEST_CASES = {
     },
     # --------------------------------------------------------
     # TC14: 多能力瓶颈 - track 容量=1 成瓶颈
-    # 目标: 验证多任务争抢稀缺能力时串行化
-    # 预期: 需要 track 的任务无法并行
+    # 预期: 4 个任务需要 track，串行化，makespan=4×4=16h
     # --------------------------------------------------------
     "TC14_capability_bottleneck": {
-        "horizon_hours": 100,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 5},
-            {"id": "track", "capability": "single_lane_track", "capacity": 1},
-        ],
+        "devices": _MC(5) + _TR(1),
         "tasks": [
-            {
-                "id": f"move_{i}",
-                "duration_hours": 4,
-                "required_capabilities": {"maglev_cart": 1, "single_lane_track": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            }
+            {"task_id": f"move_{i}", "priority": 1, "depends_on": [],
+             "eligible_devices": {
+                 "maglev_cart": ["carts-0", "carts-1", "carts-2", "carts-3", "carts-4"],
+                 "single_lane_track": ["track-0"],
+             },
+             "operations": 4}
             for i in range(4)
         ],
-        "precedence_pairs": [],
-        "_expect": {"status": "OPTIMAL", "makespan_hours": 16},  # 4*4 串行(track瓶颈)
+        "horizon_s": 360000,
+        "_expect": {"status_in": ["OPTIMAL", "FEASIBLE"], "makespan_hours": 16},
     },
     # --------------------------------------------------------
     # TC15: 零依赖全并行
-    # 目标: 验证无 precedence、容量充足时全部并行
-    # 预期: makespan = max(durations)
+    # 预期: makespan = max(3,4,5,6,7) = 7h
     # --------------------------------------------------------
     "TC15_full_parallel": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 10},
-        ],
+        "devices": _MC(10),
         "tasks": [
-            {
-                "id": f"T{i}",
-                "duration_hours": 3 + i,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            }
+            {"task_id": f"T{i}", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": [f"carts-{j}" for j in range(10)]},
+             "operations": 3 + i}
             for i in range(5)
         ],
-        "precedence_pairs": [],
-        "_expect": {"status": "OPTIMAL", "makespan_hours": 7},  # max(3,4,5,6,7)
+        "horizon_s": 180000,
+        "_expect": {"status": "OPTIMAL", "makespan_hours": 7},
     },
     # --------------------------------------------------------
     # TC16: 空任务列表（边界）
-    # 目标: 验证空输入不崩溃
-    # 预期: status=OPTIMAL, makespan=0, assignments=[]
+    # 预期: OPTIMAL, makespan=0
     # --------------------------------------------------------
     "TC16_empty_tasks": {
-        "horizon_hours": 50,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 1},
-        ],
+        "devices": _MC(1),
         "tasks": [],
-        "precedence_pairs": [],
+        "horizon_s": 180000,
         "_expect": {"status": "OPTIMAL", "makespan_hours": 0},
     },
     # --------------------------------------------------------
     # TC17: 长链强制串行
-    # 目标: 验证长 DAG 链 makespan = 链上所有 duration 之和
     # 预期: makespan = 2+3+4+5 = 14h
     # --------------------------------------------------------
     "TC17_long_chain": {
-        "horizon_hours": 100,
-        "priority_weights": None,
-        "resources": [
-            {"id": "carts", "capability": "maglev_cart", "capacity": 5},
+        "devices": _MC(5),
+        "tasks": [
+            {"task_id": "S1", "priority": 1, "depends_on": [],
+             "eligible_devices": {"maglev_cart": [f"carts-{j}" for j in range(5)]}, "operations": 2},
+            {"task_id": "S2", "priority": 1, "depends_on": ["S1"],
+             "eligible_devices": {"maglev_cart": [f"carts-{j}" for j in range(5)]}, "operations": 3},
+            {"task_id": "S3", "priority": 1, "depends_on": ["S2"],
+             "eligible_devices": {"maglev_cart": [f"carts-{j}" for j in range(5)]}, "operations": 4},
+            {"task_id": "S4", "priority": 1, "depends_on": ["S3"],
+             "eligible_devices": {"maglev_cart": [f"carts-{j}" for j in range(5)]}, "operations": 5},
+        ],
+        "horizon_s": 360000,
+        "_expect": {"status": "OPTIMAL", "makespan_hours": 14},
+    },
+}
+
+# ============================================================
+# 设备分配器独立测试用例（不经过 CP-SAT 求解器）
+# ============================================================
+ALLOC_TEST_CASES = {
+    # --------------------------------------------------------
+    # TC_A01: 空闲设备优先分配
+    # 3 台 pipette：p-1 空闲, p-2 忙碌[0-300], p-3 空闲
+    # 3 个任务：A[0,100], B[0,100], C[200,300]
+    # 预期: p-2(busy)不被使用，A→p-1, B→p-3, C→p-1(复用)
+    # --------------------------------------------------------
+    "TC_A01_idle_priority": {
+        "devices": [
+            {"device_id": "p-1", "device_type": "pipette", "state": "idle", "duration": 100},
+            {"device_id": "p-2", "device_type": "pipette", "state": "busy", "duration": 100,
+             "busy_until_s": [{"start_ts": 0, "end_ts": 300}]},
+            {"device_id": "p-3", "device_type": "pipette", "state": "idle", "duration": 100},
         ],
         "tasks": [
-            {
-                "id": "S1",
-                "duration_hours": 2,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "S2",
-                "duration_hours": 3,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "S3",
-                "duration_hours": 4,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
-            {
-                "id": "S4",
-                "duration_hours": 5,
-                "required_capabilities": {"maglev_cart": 1},
-                "earliest_start_ms": 0,
-                "deadline_ms": None,
-            },
+            {"task_id": "A", "eligible_devices": {"pipette": ["p-1", "p-2", "p-3"]}},
+            {"task_id": "B", "eligible_devices": {"pipette": ["p-1", "p-2", "p-3"]}},
+            {"task_id": "C", "eligible_devices": {"pipette": ["p-1", "p-2", "p-3"]}},
         ],
-        "precedence_pairs": [["S1", "S2"], ["S2", "S3"], ["S3", "S4"]],
-        "_expect": {"status": "OPTIMAL", "makespan_hours": 14},
+        "schedule": [
+            {"task_id": "A", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+            {"task_id": "B", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+            {"task_id": "C", "required_capabilities": {"pipette": 1}, "planned_start_s": 200, "planned_end_s": 300},
+        ],
+        "_expect": {
+            "status": "SUCCESS",
+            "assignments": [
+                {"task_id": "A", "device_id": "p-1"},
+                {"task_id": "B", "device_id": "p-3"},
+                {"task_id": "C", "device_id": "p-1"},
+            ],
+            "never_used": ["p-2"],
+        },
+    },
+    # --------------------------------------------------------
+    # TC_A02: 忙碌设备按最早完成顺序分配
+    # 3 台 PCR 全部 busy：PCR-1 到 1000, PCR-2 到 500, PCR-3 到 2000
+    # 任务[600,1200]：PCR-2(500 完成)最早可用 → 分配 PCR-2
+    # --------------------------------------------------------
+    "TC_A02_busy_earliest_first": {
+        "devices": [
+            {"device_id": "PCR-1", "device_type": "PCR", "state": "busy", "duration": 1000,
+             "busy_until_s": [{"start_ts": 0, "end_ts": 1000}]},
+            {"device_id": "PCR-2", "device_type": "PCR", "state": "busy", "duration": 500,
+             "busy_until_s": [{"start_ts": 0, "end_ts": 500}]},
+            {"device_id": "PCR-3", "device_type": "PCR", "state": "busy", "duration": 2000,
+             "busy_until_s": [{"start_ts": 0, "end_ts": 2000}]},
+        ],
+        "tasks": [
+            {"task_id": "T1", "eligible_devices": {"PCR": ["PCR-1", "PCR-2", "PCR-3"]}},
+        ],
+        "schedule": [
+            {"task_id": "T1", "required_capabilities": {"PCR": 1}, "planned_start_s": 600, "planned_end_s": 1200},
+        ],
+        "_expect": {
+            "status": "SUCCESS",
+            "assignments": [
+                {"task_id": "T1", "device_id": "PCR-2"},
+            ],
+        },
+    },
+    # --------------------------------------------------------
+    # TC_A03: 设备时间复用（非重叠时段可重用同一设备）
+    # 1 台 pipette，3 个串行任务 [0,100], [200,300], [400,500]
+    # 预期: 全部分配 p-1（时间不冲突）
+    # --------------------------------------------------------
+    "TC_A03_time_reuse": {
+        "devices": [
+            {"device_id": "p-1", "device_type": "pipette", "state": "idle", "duration": 100},
+        ],
+        "tasks": [
+            {"task_id": "A", "eligible_devices": {"pipette": ["p-1"]}},
+            {"task_id": "B", "eligible_devices": {"pipette": ["p-1"]}},
+            {"task_id": "C", "eligible_devices": {"pipette": ["p-1"]}},
+        ],
+        "schedule": [
+            {"task_id": "A", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+            {"task_id": "B", "required_capabilities": {"pipette": 1}, "planned_start_s": 200, "planned_end_s": 300},
+            {"task_id": "C", "required_capabilities": {"pipette": 1}, "planned_start_s": 400, "planned_end_s": 500},
+        ],
+        "_expect": {
+            "status": "SUCCESS",
+            "assignments": [
+                {"task_id": "A", "device_id": "p-1"},
+                {"task_id": "B", "device_id": "p-1"},
+                {"task_id": "C", "device_id": "p-1"},
+            ],
+        },
+    },
+    # --------------------------------------------------------
+    # TC_A04: 白名单过滤 - 任务只能分配到 eligible 设备
+    # p-1, p-2, p-3 三台 pipette
+    # A 只能用 [p-1, p-2], B 只能用 [p-2, p-3]
+    # 同时执行[0,100]：A→p-1, B→p-2（都尊重白名单）
+    # --------------------------------------------------------
+    "TC_A04_eligible_filtering": {
+        "devices": [
+            {"device_id": "p-1", "device_type": "pipette", "state": "idle", "duration": 100},
+            {"device_id": "p-2", "device_type": "pipette", "state": "idle", "duration": 100},
+            {"device_id": "p-3", "device_type": "pipette", "state": "idle", "duration": 100},
+        ],
+        "tasks": [
+            {"task_id": "A", "eligible_devices": {"pipette": ["p-1", "p-2"]}},
+            {"task_id": "B", "eligible_devices": {"pipette": ["p-2", "p-3"]}},
+        ],
+        "schedule": [
+            {"task_id": "A", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+            {"task_id": "B", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+        ],
+        "_expect": {
+            "status": "SUCCESS",
+            "assignments": [
+                {"task_id": "A", "device_id": "p-1"},
+                {"task_id": "B", "device_id": "p-2"},
+            ],
+        },
+    },
+    # --------------------------------------------------------
+    # TC_A05: 时间冲突导致部分分配失败
+    # 1 台 PCR，3 个任务全部同时执行[0,500]
+    # 预期: 只有 1 个任务成功，状态 PARTIAL
+    # --------------------------------------------------------
+    "TC_A05_partial_allocation": {
+        "devices": [
+            {"device_id": "PCR-1", "device_type": "PCR", "state": "idle", "duration": 500},
+        ],
+        "tasks": [
+            {"task_id": "A", "eligible_devices": {"PCR": ["PCR-1"]}},
+            {"task_id": "B", "eligible_devices": {"PCR": ["PCR-1"]}},
+            {"task_id": "C", "eligible_devices": {"PCR": ["PCR-1"]}},
+        ],
+        "schedule": [
+            {"task_id": "A", "required_capabilities": {"PCR": 1}, "planned_start_s": 0, "planned_end_s": 500},
+            {"task_id": "B", "required_capabilities": {"PCR": 1}, "planned_start_s": 0, "planned_end_s": 500},
+            {"task_id": "C", "required_capabilities": {"PCR": 1}, "planned_start_s": 0, "planned_end_s": 500},
+        ],
+        "_expect": {
+            "status": "PARTIAL",
+            "assigned_count": 1,
+            "unassigned_count": 2,
+        },
+    },
+    # --------------------------------------------------------
+    # TC_A06: 先到先得 - 同时段任务按 start 排序分配
+    # p-1, p-2 空闲，A[0,100], B[50,150], C[100,200]
+    # 排序：A(0) → B(50) → C(100)
+    # A→p-1, B→p-2(与A时间重叠不能用p-1), C→p-1(A已结束100可用p-1)
+    # --------------------------------------------------------
+    "TC_A06_fcfs_ordering": {
+        "devices": [
+            {"device_id": "p-1", "device_type": "pipette", "state": "idle", "duration": 100},
+            {"device_id": "p-2", "device_type": "pipette", "state": "idle", "duration": 100},
+        ],
+        "tasks": [
+            {"task_id": "A", "eligible_devices": {"pipette": ["p-1", "p-2"]}},
+            {"task_id": "B", "eligible_devices": {"pipette": ["p-1", "p-2"]}},
+            {"task_id": "C", "eligible_devices": {"pipette": ["p-1", "p-2"]}},
+        ],
+        "schedule": [
+            {"task_id": "A", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+            {"task_id": "B", "required_capabilities": {"pipette": 1}, "planned_start_s": 50, "planned_end_s": 150},
+            {"task_id": "C", "required_capabilities": {"pipette": 1}, "planned_start_s": 100, "planned_end_s": 200},
+        ],
+        "_expect": {
+            "status": "SUCCESS",
+            "assignments": [
+                {"task_id": "A", "device_id": "p-1"},
+                {"task_id": "B", "device_id": "p-2"},
+                {"task_id": "C", "device_id": "p-1"},
+            ],
+        },
+    },
+    # --------------------------------------------------------
+    # TC_A07: 故障设备永不分配
+    # p-1 空闲, p-2 故障, p-3 空闲
+    # 任务[0,100]：跳过 p-2 → p-1 或 p-3
+    # --------------------------------------------------------
+    "TC_A07_faulted_skip": {
+        "devices": [
+            {"device_id": "p-1", "device_type": "pipette", "state": "idle", "duration": 100},
+            {"device_id": "p-2", "device_type": "pipette", "state": "faulted", "duration": 100},
+            {"device_id": "p-3", "device_type": "pipette", "state": "idle", "duration": 100},
+        ],
+        "tasks": [
+            {"task_id": "A", "eligible_devices": {"pipette": ["p-1", "p-2", "p-3"]}},
+        ],
+        "schedule": [
+            {"task_id": "A", "required_capabilities": {"pipette": 1}, "planned_start_s": 0, "planned_end_s": 100},
+        ],
+        "_expect": {
+            "status": "SUCCESS",
+            "assignments": [
+                {"task_id": "A", "device_id": "p-1"},
+            ],
+            "never_used": ["p-2"],
+        },
     },
 }

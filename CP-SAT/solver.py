@@ -65,7 +65,7 @@ class CpSatSolver:
         self,
         request: ScheduleRequest,
         last_feasible: Optional[ScheduleResult] = None,
-        now_ms: int = 0,
+        now_s: int = 0,
     ) -> ScheduleResult:
         """
         执行战略规划，严格遵守 FEASIBLE 优先原则。
@@ -88,46 +88,44 @@ class CpSatSolver:
         model, solver, task_vars = self._build_model(request)
 
         logger.info(
-            "[T=%6.2fh] 开始主求解：任务数=%d 资源数=%d 预算=%.0fms",
-            now_ms / 3_600_000,
+            "[T=%ds] 开始主求解：任务数=%d 预算=%.0fs",
+            now_s,
             len(request.tasks),
-            len(request.resources),
             self.time_budget_s * 1000,
         )
 
         t0 = time.perf_counter()
         status = solver.solve(model)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-
+        elapsed_s = (time.perf_counter() - t0)
         logger.info(
-            "主求解完成：status=%s 耗时=%.1fms",
+            "主求解完成：status=%s 耗时=%.1fs",
             solver.status_name(status),
-            elapsed_ms,
+            elapsed_s,
         )
 
         # ── 分支处理 ─────────────────────────────────────────────
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             # ✅ 正常路径
-            return self._extract_result(solver, task_vars, request, status, elapsed_ms)
+            return self._extract_result(solver, task_vars, request, status, elapsed_s)
 
         elif status == cp_model.UNKNOWN:
             # ⚠️ 超时路径：优先级 ① 缓存 ② 应急松弛
-            return self._handle_timeout(request, elapsed_ms, last_feasible, now_ms)
+            return self._handle_timeout(request, elapsed_s, last_feasible, now_s)
 
         else:
             # ❌ 真正的 INFEASIBLE
             raise SchedulingInfeasibleError(
                 "约束冲突，无法求解。"
-                "请检查 precedence_pairs 是否成环或 deadline_ms 是否过紧。"
+                "请检查 precedence_pairs 是否成环或 deadline_s 是否过紧。"
             )
 
     # ── 超时降级 ───────────────────────────────────────────────
     def _handle_timeout(
         self,
         request: ScheduleRequest,
-        elapsed_ms: float,
+        elapsed_s: float,
         last_feasible: Optional[ScheduleResult],
-        now_ms: int,
+        now_s: int,
     ) -> ScheduleResult:
         """
         超时且未找到可行解时的三级降级策略：
@@ -139,42 +137,42 @@ class CpSatSolver:
         # Level 1：有缓存
         if last_feasible is not None:
             logger.warning(
-                "[T=%6.2fh] 主求解超时(%.1fms)，返回缓存解",
-                now_ms / 3_600_000,
-                elapsed_ms,
+                "[T=%ds] 主求解超时(%.1fs)，返回缓存解",
+                now_s,
+                elapsed_s,
             )
             return ScheduleResult(
                 status="CACHED",
-                solve_time_ms=elapsed_ms,
+                solve_time_s=elapsed_s,
                 assignments=last_feasible.assignments,
-                makespan_ms=last_feasible.makespan_ms,
+                makespan_s=last_feasible.makespan_s,
             )
 
         # Level 2：应急松弛
         logger.warning(
-            "[T=%6.2fh] 主求解超时且无缓存，启动应急求解(预算=%.0fms)",
-            now_ms / 3_600_000,
+            "[T=%ds] 主求解超时且无缓存，启动应急求解(预算=%.0fs)",
+            now_s,
             self.fallback_budget_s * 1000,
         )
-        emergency = self._emergency_solve(request, elapsed_ms)
+        emergency = self._emergency_solve(request, elapsed_s)
         if emergency is not None:
             return emergency
 
         # Level 3：彻底失败
         raise SchedulingTimeoutNoSolution(
-            f"主求解超时({elapsed_ms:.1f}ms)且应急求解也失败。"
-            "建议：放宽 deadline_ms / 减少任务数 / 增加资源。"
+            f"主求解超时({elapsed_s:.1f}ms)且应急求解也失败。"
+            "建议：放宽 deadline_s / 减少任务数 / 增加资源。"
         )
 
     # ── 应急松弛求解 ─────────────────────────────────────────────
     def _emergency_solve(
         self,
         request: ScheduleRequest,
-        primary_elapsed_ms: float,
+        primary_elapsed_s: float,
     ) -> Optional[ScheduleResult]:
         """
         松弛策略：
-        1. 移除所有 deadline_ms 软约束（仅保留 earliest_start 和 precedence）
+        1. 移除所有 deadline_s 软约束（仅保留 earliest_start 和 precedence）
         2. 只追求 FEASIBLE，不优化 makespan
         3. 使用更短的时间预算
         """
@@ -183,20 +181,19 @@ class CpSatSolver:
         relaxed_tasks = [
             Task(
                 id=t.id,
-                duration_ms=t.duration_ms,
+                duration_s=t.duration_s,
                 required_capabilities=t.required_capabilities,
                 eligible_devices=t.eligible_devices,
-                earliest_start_ms=t.earliest_start_ms,
-                deadline_ms=None,  # ✅ 松弛 deadline
+                earliest_start_s=t.earliest_start_s,
+                deadline_s=None,  # ✅ 松弛 deadline
             )
             for t in request.tasks
         ]
         relaxed_request = ScheduleRequest(
             tasks=relaxed_tasks,
             precedence_pairs=request.precedence_pairs,
-            resources=request.resources,
-            horizon_ms=request.horizon_ms,
-            priority_weights=None,  # ✅ 松弛优先级目标（纯可行性求解）
+            horizon_s=request.horizon_s,
+            priority_weights=None,  # 松弛优先级目标（纯可行性求解）
         )
 
         model, solver, task_vars = self._build_model(
@@ -207,16 +204,15 @@ class CpSatSolver:
 
         t0 = time.perf_counter()
         status = solver.solve(model)
-        elapsed_ms = primary_elapsed_ms + (time.perf_counter() - t0) * 1000
-
+        elapsed_s = primary_elapsed_s + (time.perf_counter() - t0)
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            logger.warning("应急求解成功（总耗时=%.1fms）", elapsed_ms)
+            logger.warning("应急求解成功（总耗时=%.1fs）", elapsed_s)
             return self._extract_result(
                 solver,
                 task_vars,
                 relaxed_request,
                 status,
-                elapsed_ms,
+                elapsed_s,
                 override_status="EMERGENCY",
             )
 
@@ -248,23 +244,23 @@ class CpSatSolver:
         solver.parameters.max_time_in_seconds = budget
         solver.parameters.num_search_workers = self.num_workers
 
-        horizon = request.horizon_ms
+        horizon = request.horizon_s
 
         # ── 步骤 1：为每个任务创建区间变量 ──────────────────────
         # task_id -> (start_var, end_var, interval_var)
         task_vars: Dict[str, Tuple] = {}
         for task in request.tasks:
-            lo = task.earliest_start_ms
-            hi = task.deadline_ms if task.deadline_ms is not None else horizon
+            lo = task.earliest_start_s
+            hi = task.deadline_s if task.deadline_s is not None else horizon
             start = model.new_int_var(lo, hi, f"s_{task.id}")
             end = model.new_int_var(lo, horizon, f"e_{task.id}")
             interval = model.new_interval_var(
-                start, task.duration_ms, end, f"i_{task.id}"
+                start, task.duration_s, end, f"i_{task.id}"
             )
             task_vars[task.id] = (start, end, interval)
 
-            if task.deadline_ms is not None:
-                model.add(end <= task.deadline_ms)
+            if task.deadline_s is not None:
+                model.add(end <= task.deadline_s)
 
         logger.debug(
             "[DEBUG] _build_model: precedence_pairs=%s",
@@ -292,8 +288,6 @@ class CpSatSolver:
                 key = (cap, frozenset(dev_ids))
                 cap_intervals.setdefault(key, []).append(interval)
                 cap_demands.setdefault(key, []).append(demand)
-
-        print(cap_demands)
 
         for (cap, dev_set), intervals in cap_intervals.items():
             demands = cap_demands[(cap, dev_set)]
@@ -325,7 +319,7 @@ class CpSatSolver:
         task_vars: Dict,
         request: ScheduleRequest,
         status: int,
-        elapsed_ms: float,
+        elapsed_s: float,
         override_status: Optional[str] = None,
     ) -> ScheduleResult:
         """
@@ -348,29 +342,29 @@ class CpSatSolver:
 
             # window_slack：deadline 与实际结束之差，无 deadline 则取到 horizon
             deadline = (
-                task.deadline_ms if task.deadline_ms is not None else request.horizon_ms
+                task.deadline_s if task.deadline_s is not None else request.horizon_s
             )
 
             assignments.append(
                 PlannedWindow(
                     task_id=task.id,
                     required_capabilities=dict(task.required_capabilities),
-                    planned_start_ms=s,
-                    planned_end_ms=e,
-                    window_slack_ms=max(0, deadline - e),
+                    planned_start_s=s,
+                    planned_end_s=e,
+                    window_slack_s=max(0, deadline - e),
                 )
             )
 
-        makespan_ms = max(a.planned_end_ms for a in assignments) if assignments else 0
+        makespan_s = max(a.planned_end_s for a in assignments) if assignments else 0
 
-        logger.debug("[DEBUG] makespan=%.2fh", makespan_ms / 3_600_000)
+        logger.debug("[DEBUG] makespan=%ds", makespan_s)
         logger.debug("[DEBUG] ==========================================")
 
         return ScheduleResult(
             status=status_str,
-            solve_time_ms=elapsed_ms,
+            solve_time_s=elapsed_s,
             assignments=assignments,
-            makespan_ms=makespan_ms,
+            makespan_s=makespan_s,
         )
 
 
