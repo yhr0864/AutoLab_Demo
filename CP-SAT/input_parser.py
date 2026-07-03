@@ -33,6 +33,8 @@ def parse_input(
         tid = t["task_id"]
         eligible: Dict[str, List[str]] = t.get("eligible_devices", {})
         operations: int = t.get("operations", 1)
+        earliest_start_s: int = t.get("earliest_start_s", 0)
+        deadline_s = t.get("deadline_s", None)
         task_operations[tid] = operations
 
         # 每种能力需求量为 1
@@ -51,6 +53,8 @@ def parse_input(
                 duration_s=duration_s,
                 required_capabilities=required_caps,
                 eligible_devices=eligible,
+                earliest_start_s=earliest_start_s,
+                deadline_s=deadline_s,
             )
         )
 
@@ -80,4 +84,5 @@ def _load(source: Union[str, Path, dict]) -> dict:
 
 
 if __name__ == "__main__":
-    json.loads("input.json")
+    req, devices, opts, bid, ops = parse_input("input.json")
+    print(req)

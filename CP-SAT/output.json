@@ -3,7 +3,7 @@
   "status": "optimal",
   "makespan": 8580,
   "solver": "cpsat",
-  "message": "wf-004(p=100)优先，pipette×2合并为600s连续占用；wf-003 zone-B并行 4380s完成",
+  "message": "",
  
   "assignments": [
     {"task_id":"wf-004.n-1","device_id":"pipette-1",    "start_ts":1751965200,"end_ts":1751965800, "operations": 2},

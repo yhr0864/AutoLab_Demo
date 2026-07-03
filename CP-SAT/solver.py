@@ -83,20 +83,21 @@ class CpSatSolver:
         ------
         SchedulingInfeasibleError     : 约束真正冲突，无解
         SchedulingTimeoutNoSolution   : 超时且无任何历史缓存，需上层介入
+        RuntimeError                  : 求解器返回异常状态（建模错误等）
         """
 
-        model, solver, task_vars = self._build_model(request)
+        model, solver, task_vars, assign_lits = self._build_model(request)
 
         logger.info(
-            "[T=%ds] 开始主求解：任务数=%d 预算=%.0fs",
+            "[T=%ds] 开始主求解：任务数=%d 预算=%.1fs",
             now_s,
             len(request.tasks),
-            self.time_budget_s * 1000,
+            self.time_budget_s,
         )
 
         t0 = time.perf_counter()
         status = solver.solve(model)
-        elapsed_s = (time.perf_counter() - t0)
+        elapsed_s = time.perf_counter() - t0
         logger.info(
             "主求解完成：status=%s 耗时=%.1fs",
             solver.status_name(status),
@@ -106,75 +107,111 @@ class CpSatSolver:
         # ── 分支处理 ─────────────────────────────────────────────
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             # ✅ 正常路径
-            return self._extract_result(solver, task_vars, request, status, elapsed_s)
-
-        elif status == cp_model.UNKNOWN:
-            # ⚠️ 超时路径：优先级 ① 缓存 ② 应急松弛
-            return self._handle_timeout(request, elapsed_s, last_feasible, now_s)
-
-        else:
-            # ❌ 真正的 INFEASIBLE
-            raise SchedulingInfeasibleError(
-                "约束冲突，无法求解。"
-                "请检查 precedence_pairs 是否成环或 deadline_s 是否过紧。"
+            msg = f"CP-SAT直接求解(status={solver.status_name(status)})"
+            return self._extract_result(
+                solver, task_vars, request, status, elapsed_s,
+                assign_lits=assign_lits, message=msg,
             )
 
-    # ── 超时降级 ───────────────────────────────────────────────
-    def _handle_timeout(
+        # 其余状态（UNKNOWN / INFEASIBLE / MODEL_INVALID 等）统一进降级流程
+        return self._handle_failure(
+            request, status, solver.status_name(status), elapsed_s, last_feasible, now_s
+        )
+
+    # ── 统一降级处理 ───────────────────────────────────────────────
+    def _handle_failure(
         self,
         request: ScheduleRequest,
+        status: int,
+        status_name: str,
         elapsed_s: float,
         last_feasible: Optional[ScheduleResult],
         now_s: int,
     ) -> ScheduleResult:
         """
-        超时且未找到可行解时的三级降级策略：
-        Level 1：返回上次缓存的可行解（最快，0 ms 额外开销）
-        Level 2：松弛软约束后应急求解（有限额外时间）
-        Level 3：实在无解，抛出异常通知上层
+        统一降级处理，触发场景有两类（合并到同一入口）：
+        1. 求解超时      status == UNKNOWN     —— 预算内未出解
+        2. 约束不可行    status == INFEASIBLE  —— 通常是任务 deadline 过紧
+
+        降级顺序：
+        Level 1: 【仅超时】有缓存 → 直接返回上一拍缓存解（0 额外开销）
+                 —— INFEASIBLE 场景约束已变化，旧解可能不覆盖新任务，故跳过缓存
+        Level 2: 应急松弛求解（松弛任务 deadline 后重解）
+        Level 3: 应急也失败 → 按场景抛不同异常
+                 —— 额外拦截 MODEL_INVALID 等异常状态，避免伪装成"超时无解"掩盖建模 bug
         """
 
-        # Level 1：有缓存
-        if last_feasible is not None:
+        reason = (
+            "不可行(INFEASIBLE)"
+            if status == cp_model.INFEASIBLE
+            else f"超时({elapsed_s:.1f}s)"
+        )
+
+        # ── Level 1：仅【超时】场景使用缓存 ──
+        # 超时时约束未变，上一拍缓存解仍满足当前约束；
+        # 而 INFEASIBLE 意味着本拍约束已与上一拍不同（否则不会突然不可行），
+        # 缓存解可能不覆盖本拍新任务，直接返回会丢任务 → 跳过缓存
+        if status == cp_model.UNKNOWN and last_feasible is not None:
             logger.warning(
-                "[T=%ds] 主求解超时(%.1fs)，返回缓存解",
+                "[T=%ds] 主求解%s，返回缓存解(CACHED)",
                 now_s,
-                elapsed_s,
+                reason,
             )
             return ScheduleResult(
                 status="CACHED",
                 solve_time_s=elapsed_s,
                 assignments=last_feasible.assignments,
                 makespan_s=last_feasible.makespan_s,
+                message=f"主求解超时({elapsed_s:.1f}s)，返回历史缓存解(Level 1)",
             )
 
         # Level 2：应急松弛
         logger.warning(
-            "[T=%ds] 主求解超时且无缓存，启动应急求解(预算=%.0fs)",
+            "[T=%ds] 主求解%s，启动应急松弛求解(预算=%.1fs)",
             now_s,
-            self.fallback_budget_s * 1000,
+            reason,
+            self.fallback_budget_s,
         )
-        emergency = self._emergency_solve(request, elapsed_s)
+        emergency = self._emergency_solve(request, elapsed_s, reason=reason)
         if emergency is not None:
             return emergency
 
-        # Level 3：彻底失败
-        raise SchedulingTimeoutNoSolution(
-            f"主求解超时({elapsed_s:.1f}ms)且应急求解也失败。"
-            "建议：放宽 deadline_s / 减少任务数 / 增加资源。"
-        )
+        # ── Level 3：连松弛求解都失败，按 status 抛不同异常 ──
+        if status == cp_model.INFEASIBLE:
+            raise SchedulingInfeasibleError(
+                f"主求解不可行(INFEASIBLE)，且松弛任务 deadline 后重解仍无解，"
+                f"存在更强约束冲突(precedence 成环 / 资源容量不足)。"
+            )
+        elif status == cp_model.UNKNOWN:
+            raise SchedulingTimeoutNoSolution(
+                f"主求解超时({elapsed_s:.1f}s)，"
+                f"且松弛任务 deadline 后的应急求解(预算={self.fallback_budget_s:.1f}s)"
+                f"仍未得到可行解。"
+            )
+        else:
+            # MODEL_INVALID 等：非超时也非约束冲突，通常是建模错误（问题2）
+            # 单独抛出，避免被误当成"超时无解"而掩盖真正的代码 bug
+            raise RuntimeError(
+                f"求解器返回异常状态 {status_name}，"
+                f"通常是建模错误(变量域/约束非法)，非超时或约束冲突，请检查建模逻辑。"
+            )
 
     # ── 应急松弛求解 ─────────────────────────────────────────────
     def _emergency_solve(
         self,
         request: ScheduleRequest,
         primary_elapsed_s: float,
+        reason: str = "",
     ) -> Optional[ScheduleResult]:
         """
+        应急松弛求解 —— 降级 Level 2。
+        触发场景（两类共用，见 _handle_failure）：
+          · 求解超时(UNKNOWN)    ：主求解预算不足，用更宽松模型+独立预算再试
+          · 约束冲突(INFEASIBLE) ：任务 deadline 过紧导致无解，松弛后重解
         松弛策略：
-        1. 移除所有 deadline_s 软约束（仅保留 earliest_start 和 precedence）
-        2. 只追求 FEASIBLE，不优化 makespan
-        3. 使用更短的时间预算
+          1. 移除所有【任务 deadline】硬约束
+          2. 使用独立的 fallback_budget_s 作为求解预算
+        返回 None 表示应急仍失败，交由 Level 3 处理。
         """
 
         # 构造松弛版请求（去掉所有 deadline）
@@ -196,7 +233,7 @@ class CpSatSolver:
             priority_weights=None,  # 松弛优先级目标（纯可行性求解）
         )
 
-        model, solver, task_vars = self._build_model(
+        model, solver, task_vars, assign_lits = self._build_model(
             relaxed_request,
             time_budget=self.fallback_budget_s,
             feasibility_only=True,  # ✅ 不设优化目标，只求可行解
@@ -213,7 +250,9 @@ class CpSatSolver:
                 relaxed_request,
                 status,
                 elapsed_s,
+                assign_lits=assign_lits,
                 override_status="EMERGENCY",
+                message=f"主求解{reason}，经应急松弛求解(去除deadline)后获得可行解(Level 2)",
             )
 
         logger.error("应急求解失败：status=%s", solver.status_name(status))
@@ -273,26 +312,43 @@ class CpSatSolver:
             succ_start, _, _ = task_vars[succ_id]
             model.add(succ_start >= pred_end)
 
-        # ── 步骤 3：资源池并发约束（按 eligible_devices 子集分组）──
-        # 语义：eligible_devices[cap] 的设备集合 = 可互换匿名资源池。
-        #       调度层不关心分到哪台，只保证「同池并发 ≤ 池容量」。
-        # 实现：相同 frozenset(设备) 的任务共享一条 cumulative，
-        #       容量 = 池内设备数。
-        # 前提：池之间不重叠（同能力任务白名单要么相同要么不相交）。
-        cap_intervals: Dict[str, List] = {}
-        cap_demands: Dict[str, List[int]] = {}
+        # ── 步骤 3（重写）：精确到物理设备的容量约束 ──
+        #
+        # 背景：白名单可能部分重叠，抽象 cumulative 会超分（跨池共享设备互不感知）。
+        # 做法：为 (任务, 能力, 候选设备) 建 optional interval + 布尔分配变量，
+        #      把 NoOverlap 建在物理设备上，从根本上杜绝超分。
+        #
+        # 注意：分配变量 lit 是【模型内部】保证不超分的必需项，不可省略；
+        #      是否对外暴露绑定结果，由 _extract_result 决定（见下）。
+        device_intervals: Dict[str, List] = {}
+        # 记录每个任务在每个能力上的候选 (device_id, lit)，供 _extract_result 可选读取
+        # 若坚持"完全不输出绑定"，可以不维护这个字典
+        assign_lits: Dict[Tuple[str, str], List[Tuple[str, "cp_model.IntVar"]]] = {}
         for task in request.tasks:
-            _, _, interval = task_vars[task.id]
+            start, end, _ = task_vars[task.id]
             for cap, demand in task.required_capabilities.items():
+                # 本场景 demand 恒为 1，这里仍按 demand 写，兼容未来多占用
                 dev_ids = task.eligible_devices.get(cap, [])
-                key = (cap, frozenset(dev_ids))
-                cap_intervals.setdefault(key, []).append(interval)
-                cap_demands.setdefault(key, []).append(demand)
-
-        for (cap, dev_set), intervals in cap_intervals.items():
-            demands = cap_demands[(cap, dev_set)]
-            capacity = max(1, len(dev_set))
-            model.add_cumulative(intervals, demands, capacity)
+                if not dev_ids:
+                    continue
+                presence_lits = []
+                for did in dev_ids:
+                    lit = model.new_bool_var(f"x_{task.id}_{cap}_{did}")
+                    opt_interval = model.new_optional_interval_var(
+                        start,
+                        task.duration_s,
+                        end,
+                        lit,
+                        f"oi_{task.id}_{cap}_{did}",
+                    )
+                    device_intervals.setdefault(did, []).append(opt_interval)
+                    presence_lits.append(lit)
+                    assign_lits.setdefault((task.id, cap), []).append((did, lit))
+                # 恰好占用 demand 台（本场景 demand==1，即"选且仅选一台"）
+                model.add(sum(presence_lits) == demand)
+        # 每台物理设备：同一时刻只服务 1 个任务
+        for did, intervals in device_intervals.items():
+            model.add_no_overlap(intervals)
 
         # ── 步骤 4：优化目标（可行性模式下跳过） ───────────────────────────────
         if not feasibility_only:
@@ -310,7 +366,7 @@ class CpSatSolver:
 
         logger.debug("[DEBUG] priority_weights=%s", request.priority_weights)
 
-        return model, solver, task_vars
+        return model, solver, task_vars, assign_lits
 
     # ── 结果提取 ───────────────────────────────────────────────
     def _extract_result(
@@ -320,7 +376,9 @@ class CpSatSolver:
         request: ScheduleRequest,
         status: int,
         elapsed_s: float,
+        assign_lits: Optional[Dict] = None,
         override_status: Optional[str] = None,
+        message: str = "",
     ) -> ScheduleResult:
         """
         从求解器提取时序结果，构造 ScheduleResult。
@@ -357,6 +415,15 @@ class CpSatSolver:
 
         makespan_s = max(a.planned_end_s for a in assignments) if assignments else 0
 
+        # 从 solver 内部布尔变量提取设备绑定
+        solver_device_assignments: Dict[str, str] = {}
+        if assign_lits:
+            for (task_id, cap), dev_lits in assign_lits.items():
+                for did, lit in dev_lits:
+                    if solver.value(lit) == 1:
+                        solver_device_assignments[task_id] = did
+                        break  # 每个能力只取第一个匹配设备
+
         logger.debug("[DEBUG] makespan=%ds", makespan_s)
         logger.debug("[DEBUG] ==========================================")
 
@@ -365,6 +432,8 @@ class CpSatSolver:
             solve_time_s=elapsed_s,
             assignments=assignments,
             makespan_s=makespan_s,
+            message=message,
+            solver_device_assignments=solver_device_assignments,
         )
 
 

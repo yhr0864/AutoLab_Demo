@@ -64,6 +64,8 @@ class ScheduleResult:
     solve_time_s: float  # 实际求解耗时（秒），用于性能监控
     assignments: List[PlannedWindow] = field(default_factory=list)
     makespan_s: int = 0
+    message: str = ""  # 求解策略说明
+    solver_device_assignments: Dict[str, str] = field(default_factory=dict)  # task_id → device_id
 
 
 @dataclass

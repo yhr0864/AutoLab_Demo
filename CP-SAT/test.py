@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 from typing import Dict, Any, List
 from models_base import (
     Task, ScheduleRequest, Device, PlannedWindow, ScheduleResult,
@@ -6,7 +7,7 @@ from models_base import (
 )
 from solver import CpSatSolver
 from device_allocator import GreedyDeviceAllocator
-from test_cases import TEST_CASES, ALLOC_TEST_CASES
+from test_cases import TEST_CASES, ALLOC_TEST_CASES, INTEGRATION_TEST_CASES
 from exceptions import (
     SchedulingInfeasibleError,
     SchedulingInputError,
@@ -66,6 +67,79 @@ def build_request(spec: Dict[str, Any]) -> ScheduleRequest:
     )
 
 
+def _parse_devices_for_test(spec: dict) -> List[Device]:
+    """从测试用例 spec 构造 Device 对象列表。"""
+    _state_map = {"idle": DeviceState.IDLE, "busy": DeviceState.BUSY, "faulted": DeviceState.FAULTED}
+    devices = []
+    for d in spec.get("devices", []):
+        busy = [BusyInterval(start_s=b["start_ts"], end_s=b["end_ts"])
+                for b in d.get("busy_until_s", [])]
+        devices.append(Device(
+            device_id=d["device_id"],
+            device_type=d["device_type"],
+            state=_state_map.get(d["state"], DeviceState.IDLE),
+            duration_s=d.get("duration", 0),
+            busy_until=busy,
+        ))
+    return devices
+
+
+def _check_device_assertions(alloc_assignments, expect: dict, verbose: bool = True):
+    """校验设备级断言：no_overlap / no_device_overlap / device_of / same_device / same_device_for / distinct_devices。"""
+    dev_tasks: Dict[str, List[tuple]] = defaultdict(list)
+    task_devs: Dict[str, set] = defaultdict(set)  # task_id → {device_id, ...}
+    for a in alloc_assignments:
+        dev_tasks[a.device_id].append((a.task_id, a.planned_start_s, a.planned_end_s))
+        task_devs[a.task_id].add(a.device_id)
+
+    # ── no_overlap / no_device_overlap ──
+    if expect.get("no_overlap") or expect.get("no_device_overlap"):
+        for did, tasks in dev_tasks.items():
+            tasks_sorted = sorted(tasks, key=lambda x: x[1])
+            for i in range(len(tasks_sorted)):
+                for j in range(i + 1, len(tasks_sorted)):
+                    t1 = tasks_sorted[i]
+                    t2 = tasks_sorted[j]
+                    assert t1[2] <= t2[1], (
+                        f"设备 {did} 上任务 {t1[0]}[{t1[1]},{t1[2]}] "
+                        f"与 {t2[0]}[{t2[1]},{t2[2]}] 时间重叠（超分）！"
+                    )
+
+    # ── device_of ──
+    if "device_of" in expect:
+        for tid, want_did in expect["device_of"].items():
+            got = task_devs.get(tid, set())
+            assert want_did in got, f"任务 {tid} 期望有分配 {want_did}, 实际设备 {got}"
+
+    # ── same_device (list of lists) ──
+    if "same_device" in expect:
+        for group in expect["same_device"]:
+            # 交集非空 = 共享某设备（多能力任务可能分配多设备）
+            common = set.intersection(*(task_devs.get(tid, set()) for tid in group))
+            assert len(common) >= 1, f"任务 {group} 应共享同一设备, 实际 {dict(task_devs)}"
+
+    # ── same_device_for (flat list) ──
+    if "same_device_for" in expect:
+        group = expect["same_device_for"]
+        common = set.intersection(*(task_devs.get(tid, set()) for tid in group))
+        assert len(common) >= 1, f"任务 {group} 应共享同一设备, 实际 {dict(task_devs)}"
+
+    # ── distinct_devices (list of lists or flat list) ──
+    if "distinct_devices" in expect:
+        groups = expect["distinct_devices"]
+        if not isinstance(groups[0], list):
+            groups = [groups]
+        for group in groups:
+            used = set()
+            for tid in group:
+                devs = task_devs.get(tid, set())
+                assert devs, f"任务 {tid} 无分配记录"
+                # 多能力任务可能有多设备，检查是否存在未被占用的设备
+                unused = devs - used
+                assert unused, f"任务 {tid} 的设备 {devs} 已被前序任务占用 {used}"
+                used.add(next(iter(unused)))  # 记录多能力中第一个未占用设备
+
+
 def run_all():
     solver = CpSatSolver()
 
@@ -82,8 +156,10 @@ def run_all():
             print(f"  status   = {result.status}")
             print(f"  makespan = {result.makespan_s / HOUR_S:.2f}h")
             print(f"  solve_s = {result.solve_time_s:.1f}")
+            if result.message:
+                print(f"  message  = {result.message}")
 
-            # 断言示例
+            # 调度层断言
             if "status" in expect:
                 assert (
                     result.status == expect["status"]
@@ -95,6 +171,42 @@ def run_all():
                 assert (
                     got == expect["makespan_hours"]
                 ), f"期望 makespan={expect['makespan_hours']}h, 实际 {got}h"
+            if "message_contains" in expect:
+                assert expect["message_contains"] in result.message, (
+                    f"期望 message 包含 '{expect['message_contains']}', 实际 '{result.message}'"
+                )
+
+            # ── 设备级断言（优先用 solver 内部绑定，回退到分配器）──
+            _needs_alloc = any(k in expect for k in
+                               ("no_device_overlap", "device_of", "same_device", "distinct_devices"))
+            if _needs_alloc:
+                if result.solver_device_assignments:
+                    # solver 已确定设备绑定 → 构造简易 DeviceAssignment 做校验
+                    solver_assigns = [
+                        DeviceAssignment(
+                            task_id=tid, device_id=did, device_type="",
+                            planned_start_s=next(
+                                (a.planned_start_s for a in result.assignments if a.task_id == tid), 0),
+                            planned_end_s=next(
+                                (a.planned_end_s for a in result.assignments if a.task_id == tid), 0),
+                        )
+                        for tid, did in result.solver_device_assignments.items()
+                    ]
+                    _check_device_assertions(solver_assigns, expect)
+                    for a in sorted(solver_assigns, key=lambda x: (x.device_id, x.planned_start_s)):
+                        print(f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]")
+                else:
+                    # 回退：跑分配器
+                    devices = _parse_devices_for_test(spec)
+                    tasks = req.tasks
+                    allocator = GreedyDeviceAllocator(devices=devices, tasks=tasks)
+                    alloc_result = allocator.allocate(result)
+                    if alloc_result.status != "SUCCESS":
+                        print(f"  [WARN] 分配器状态={alloc_result.status}, 未分配={alloc_result.unassigned}")
+                    _check_device_assertions(alloc_result.assignments, expect)
+                    for a in sorted(alloc_result.assignments, key=lambda x: (x.device_id, x.planned_start_s)):
+                        print(f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]")
+
             if "note" in expect:
                 print(f"  note: {expect['note']}")
             print("  [PASS]")
@@ -275,7 +387,7 @@ def run_allocator_tests():
                 for w in spec["schedule"]
             ]
             schedule_result = ScheduleResult(
-                status="TEST", solve_time_s=0, assignments=windows, makespan_s=0,
+                status="TEST", solve_time_s=0, assignments=windows, makespan_s=0, message="",
             )
 
             # 执行分配
@@ -319,12 +431,83 @@ def run_allocator_tests():
 
 
 # ============================================================
+# 集成测试（求解 + 分配完整链路）
+# ============================================================
+
+def run_integration_tests():
+    """端到端测试：输入 → 求解 → 分配 → 校验设备级结果。"""
+    print(f"\n{'='*60}\n[集成测试：求解 + 分配完整链路]")
+
+    for name, spec in INTEGRATION_TEST_CASES.items():
+        print(f"\n--- {name} ---")
+        expect = spec.get("_expect", {})
+
+        try:
+            # ① 解析 → 调度
+            req = build_request(spec)
+            solver = CpSatSolver()
+            result = solver.solve(req)
+
+            print(f"  solver   = {result.status}, makespan={result.makespan_s / HOUR_S:.2f}h")
+            if result.message:
+                print(f"  message  = {result.message}")
+
+            # 断言调度层
+            if "solver_status" in expect:
+                assert result.status == expect["solver_status"], (
+                    f"期望 solver={expect['solver_status']}, 实际 {result.status}"
+                )
+            if "makespan_hours" in expect:
+                got = round(result.makespan_s / HOUR_S, 2)
+                assert got == expect["makespan_hours"], (
+                    f"期望 makespan={expect['makespan_hours']}h, 实际 {got}h"
+                )
+
+            # ② 分配
+            devices = _parse_devices_for_test(spec)
+            tasks = req.tasks
+            allocator = GreedyDeviceAllocator(devices=devices, tasks=tasks)
+            alloc_result = allocator.allocate(result)
+
+            print(f"  alloc    = {alloc_result.status}, "
+                  f"assigned={len(alloc_result.assignments)}, "
+                  f"unassigned={len(alloc_result.unassigned)}")
+            if alloc_result.unassigned:
+                print(f"  未分配: {alloc_result.unassigned}")
+
+            for a in sorted(alloc_result.assignments, key=lambda x: (x.device_id, x.planned_start_s)):
+                print(f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]")
+
+            # 断言分配层
+            if "alloc_status" in expect:
+                assert alloc_result.status == expect["alloc_status"], (
+                    f"期望 alloc={expect['alloc_status']}, 实际 {alloc_result.status}"
+                )
+
+            # ③ 设备级断言
+            _check_device_assertions(alloc_result.assignments, expect)
+
+            print("  [PASS]")
+
+        except AssertionError as e:
+            print(f"  [FAIL] {e}")
+        except SchedulingInfeasibleError as e:
+            if expect.get("raises") == "SchedulingInfeasibleError":
+                print(f"  [PASS] (INFEASIBLE: {e})")
+            else:
+                print(f"  [FAIL] (意外 INFEASIBLE: {e})")
+        except Exception as e:
+            print(f"  [ERROR] {type(e).__name__}: {e}")
+
+
+# ============================================================
 # 主入口
 # ============================================================
 
 if __name__ == "__main__":
-    run_all()  # TC01~TC17 常规分支
-    run_priority_test()  # 优先级专项
-    run_emergency_test()  # EMERGENCY 分支
-    run_cached_test()  # CACHED 分支
-    run_allocator_tests()  # 分配器专项
+    run_all()
+    run_priority_test()
+    run_emergency_test()
+    run_cached_test()
+    run_allocator_tests()
+    run_integration_tests()

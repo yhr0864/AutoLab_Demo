@@ -33,6 +33,8 @@
       "priority": 50,
       "depends_on": [],
       "eligible_devices": {"pipette": ["pipette-1","pipette-2"]},
+      "earliest_start_s": 0,
+      "deadline_s": null,
       "operations": 2
     },
     {
@@ -82,6 +84,8 @@
       "priority": 50,
       "depends_on": ["wf-001.n-7"],
       "eligible_devices": {"sealer": ["sealer-1"]},
+      "earliest_start_s": 0,
+      "deadline_s": null,
       "operations": 1
     },
  

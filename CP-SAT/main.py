@@ -27,6 +27,7 @@ output = {
     "status": schedule_result.status.lower(),
     "makespan": schedule_result.makespan_s,
     "solver": "cpsat",
+    "message": schedule_result.message,
     "assignments": [
         {
             "task_id": a.task_id,
