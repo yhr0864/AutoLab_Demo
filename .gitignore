@@ -7,3 +7,4 @@ natsVSkafka/src/nats/data
 **/data/
 # Meca500 - extracted text is derivative, regeneratable via extract.sh
 MecaPortal/search/manual.txt
+MecaPortal/search/user_manual.txt

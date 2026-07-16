@@ -4,31 +4,45 @@
 本项目包含 Mecademic Meca500 六轴工业机器人的相关开发工作。主要编程语言为 Python，
 通过 TCP/IP 协议与机器人通信。项目使用 RoboDK 进行离线仿真。
 
-## PDF 手册自动检索 (Meca500 Programming Manual)
+## PDF 手册自动检索
+
+项目包含两份 Meca500 手册，根据问题类型选择检索目标：
+
+| 手册 | 文件 | 行数 | 内容范围 |
+|------|------|------|----------|
+| **Programming Manual** | `search/manual.txt` | 10,897 | 编程指令、API、通信协议、命令语法、错误代码 |
+| **User Manual** | `search/user_manual.txt` | 2,754 | 安全规范、安装、技术规格、硬件操作、维护、故障排除 |
+
+### 如何选择手册
+
+- **编程/指令/API 类问题** → 只搜 `manual.txt`（Programming Manual）
+- **硬件/安全/安装/规格/维护类问题** → 搜 `user_manual.txt`（User Manual），必要时交叉搜 `manual.txt`
+- **不确定类型** → 两个都搜
 
 ### 触发原则
 
-只要用户的问题涉及 Meca500 的具体指令、参数、坐标系、错误代码、通信协议、编程细节
-或运动控制实现，**无论是否命中特定关键词，都应先搜索 manual.txt 再回答。不要凭记忆瞎答。**
+只要用户的问题涉及 Meca500 的任何方面，**无论是否命中特定关键词，都应先搜索手册再回答。不要凭记忆瞎答。**
 
 常见触发场景示例（非穷举）：
-meca/meca500、机械臂/机器人、TCP/TRF/WRF/FRF/BRF、Move*/Set* 系列命令、
-关节/笛卡尔/位姿/姿态、Euler 角/欧拉角、夹爪/gripper、奇异点、画圆/圆弧/轨迹/插补、
-错误代码/报错、EtherCAT/EtherNet/IP/PROFINET、激活/回零/Home、速度/加速度/负载、
-ResetError/ResumeMotion/PauseMotion/ClearMotion
+
+| 类型 | 触发词 | 检索目标 |
+|------|--------|----------|
+| 编程/指令 | meca/meca500、机械臂、TCP/TRF/WRF、Move*/Set*、关节/笛卡尔/位姿、Euler 角、夹爪/gripper、奇异点、画圆/圆弧、错误代码、EtherCAT、激活/回零、速度/加速度、负载 | `manual.txt` |
+| 硬件/安全 | 安全/safety、安装/install、规格/spec、尺寸/dimension、重量/weight、散热/温度/temperature、端部安装/end-effector、维护/maintenance、故障/troubleshoot、噪音/noise、EMC、拆解/decommission、CAD | `user_manual.txt` |
 
 ### 检索流程（必须严格按顺序执行）
 
 ```
 ═══════════════════════════════════════════════════════════════
-CRITICAL: 绝对禁止直接 Read 整个 manual.txt 文件（10897 行）。
+CRITICAL: 绝对禁止直接 Read 整个 manual.txt/user_manual.txt。
 每次检索必须走 Grep → Read offset/limit 流程。
 Grepless Read = 浪费 context、降低精度、违反分层检索设计。
 ═══════════════════════════════════════════════════════════════
 
 Step 0 - 中英术语转换（最关键，最容易漏）:
-  手册原文是英文，用户中文提问在英文手册里 Grep 不到任何东西（已验证）。
-  必须先将用户的中文/口语化描述转换为对应的英文技术术语：
+  两份手册原文都是英文，必须先将中文转换为英文技术术语再 Grep：
+
+  编程相关（搜 manual.txt）：
     画圆 → circular / arc / interpolation / MoveLin
     夹爪 → gripper / MEGP
     奇异点 → singularity / SetAutoConf / SetConf
@@ -44,10 +58,23 @@ Step 0 - 中英术语转换（最关键，最容易漏）:
     暂停/停止 → PauseMotion / ClearMotion
     恢复 → ResumeMotion
     负载 → Payload / SetGripForce
-  如果用户提问本身就是英文命令名（如 MoveLin），直接跳到 Step 1。
+
+  硬件/安全相关（搜 user_manual.txt）：
+    安全 → safety / warning / danger
+    安装/设置 → installation / setup / mount
+    规格/参数 → specification / technical / dimension / weight
+    维护 → maintenance / inspection
+    故障/问题 → troubleshoot / error / problem
+    端部/工具 → end-effector / tool / mount
+    温度/散热 → temperature / cooling / clearance
+    噪音 → noise / EMC
+    拆解/报废 → decommission / disposal
+
+  如果用户提问本身就是英文命令名，直接跳到 Step 1。
 
 Step 1 - Grep 定位:
-  Grep -n -i "英文术语" MecaPortal/search/manual.txt
+  Grep -n -i "英文术语" MecaPortal/search/manual.txt     ← 编程问题
+  Grep -n -i "英文术语" MecaPortal/search/user_manual.txt  ← 硬件/安全/安装问题
   - 必须使用 -n 获取行号，-i 不区分大小写
   - output_mode: "content"，head_limit: 20
   - 如果首选术语无结果，换同义词/相关术语重试
@@ -55,54 +82,74 @@ Step 1 - Grep 定位:
 Step 2 - Read 精准读取上下文:
   根据 Step 1 得到的每个命中行号 N：
   Read MecaPortal/search/manual.txt, offset=N-30, limit=80
-  这样每次只读 80 行上下文，而不是整个 10897 行文件。
+  （或 Read MecaPortal/search/user_manual.txt, offset=N-30, limit=80）
   如果多个命中点分布在不同的行区间，分别 Read 每个区间。
 
 Step 3 - 交叉引用:
-  如果搜索结果引用了其他命令/概念，继续 Grep 那些命令。
-  例如：搜了 MoveLin 后发现还涉及 SetBlending、SetJointVel、SetConf → 分别 Grep。
+  如果搜索结果引用了其他命令/概念/章节 → 继续 Grep。
+  如果是硬件问题但涉及命令（如 troubleshooting 章节引用了 ResetError）
+  → 交叉搜另一本手册。
 
 Step 4 - 综合回答:
-  基于手册原文综合回答，必须引用手册中的具体命令名。
-  如果手册无直接答案（如"画圆"无原生命令），解释原因并给出基于已有命令的组合方案。
+  基于手册原文综合回答，必须引用手册中的具体出处。
+  如果手册无直接答案，解释原因并给出基于已有信息的方案。
 
 Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
   以固定格式标注：
   ```
   ---
   📖 信息来源：Meca500 Programming Manual (mc-pm-meca500.pdf)
-  检索关键词：MoveLin, SetBlending, SetTrf
-  引用章节：Chapter 10 Motion commands (p.228-270)
+     及 Meca500 User Manual (mc-um-meca500.pdf)
+  检索关键词：safety, end-effector, mounting
+  引用章节：User Manual Ch.4 Safety / Ch.8 Installing an end-effector
   检索方式：Grep → Read offset/limit（上下文行数：~80 行/命中点）
   ```
-  如果多次 Grep 检索了不同关键词/章节，在列表中全部列出。
+  如果只搜了一本手册，只列那本即可。
 ```
 
-### 手册章节速查表（仅标注印刷页码，不标行号）
+### Programming Manual 章节速查表 (`manual.txt`)
 
 | 章节 | 内容 | 印刷页码 |
 |------|------|----------|
-| 3 | Basic theory: TRF, WRF, TCP, Euler angles (α,β,γ), singularities | p.50 |
+| 3 | Basic theory: TRF, WRF, TCP, Euler angles, singularities | p.50 |
 | 4 | TCP/IP communication protocol | p.112 |
 | 5 | Cyclic protocols (EtherCAT, EtherNet/IP, PROFINET) | p.117 |
-| 10 | Motion commands (MoveLin, MovePose, MoveJoints, MoveLinRelTrf, etc.) | p.228 |
-| 11 | Robot control (ActivateRobot, DeactivateRobot, Home, PauseMotion, etc.) | p.271 |
-| 12 | Data requests (GetStatusRobot, GetRtCartPos, GetRtJointPos, GetConf, etc.) | p.296 |
+| 10 | Motion commands (MoveLin, MovePose, MoveJoints, etc.) | p.228 |
+| 11 | Robot control (ActivateRobot, Home, etc.) | p.271 |
+| 12 | Data requests (GetStatusRobot, GetRtCartPos, etc.) | p.296 |
 | 14 | Work zone supervision / collision prevention | p.352 |
 | 15 | Accessories (gripper MEGP 25) | p.364 |
 
+### User Manual 章节速查表 (`user_manual.txt`)
+
+| 章节 | 内容 | 印刷页码 |
+|------|------|----------|
+| 4 | Safety | p.16 |
+| 5 | Technical specifications | p.41 |
+| 6 | Installing the robot system | p.46 |
+| 7 | Operating the robot system | p.49 |
+| 8 | Installing an end-effector | p.66 |
+| 9 | Examples | p.68 |
+| 10 | Inspection and maintenance | p.70 |
+| 11 | Troubleshooting | p.75 |
+| 12 | Decommissioning | p.77 |
+| 13-14 | EMC test results | p.81 |
+| 17 | Terminology | p.95 |
+
 ### 降级策略
 
-- 如果 `manual.txt` 不存在 → 运行 `bash MecaPortal/search/extract.sh`
-- 如果 Grep 无结果 → 换同义词重试 Step 1；仍无结果则 Read PDF 原文件的相关章节（参考章节表估算页码范围）
-- 如果 PDF 修改时间比 manual.txt 新 → 提示用户运行 `bash MecaPortal/search/extract.sh` 更新
+- 如果文本文件不存在 → 运行 `bash MecaPortal/search/extract.sh`
+- 如果 Grep 无结果 → 换同义词重试 Step 1；仍无结果则 Read PDF 原文件的相关章节
+- 如果 PDF 修改时间比文本文件新 → 提示用户运行 extract.sh 更新
 
 ## 项目目录结构
 
 - `MecaPortal/` — Meca500 机器人项目主目录
-  - `mc-pm-meca500.pdf` — Meca500 编程手册 (最新版本，Revision 11.3.84)
+  - `mc-pm-meca500.pdf` — Programming Manual（编程指令、API 参考）
+  - `mc-um-meca500.pdf` — User Manual（安全、安装、硬件规格、维护）
   - `Prog2.py` — Pick-and-Place 示例（RoboDK API）
-  - `search/manual.txt` — PDF 文本提取（~10897 行，用于 Grep 检索）
+  - `search/manual.txt` — Programming Manual 文本提取（~10,897 行）
+  - `search/user_manual.txt` — User Manual 文本提取（~2,754 行）
   - `search/extract.sh` — 文本提取脚本（PDF 更新后运行）
   - `venv/` — Python 虚拟环境
 - `GoToPy/` — GoTo Python gRPC 项目
