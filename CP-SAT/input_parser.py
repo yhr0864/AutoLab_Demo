@@ -37,22 +37,28 @@ def parse_input(
         deadline_s = t.get("deadline_s", None)
         task_operations[tid] = operations
 
-        # 每种能力需求量为 1
-        required_caps: Dict[str, int] = {cap: 1 for cap in eligible.keys()}
+        # 单能力：取唯一 key
+        cap = next(iter(eligible), "")
+        dev_ids = eligible.get(cap, [])
 
-        # 任务时长 = operations × 白名单内设备单操作时长（取最大，保守）
-        per_op_s = 0
-        for cap, dev_ids in eligible.items():
-            for did in dev_ids:
-                per_op_s = max(per_op_s, dev_duration.get(did, 0))
+        # demand：优先从 demand 字段取，否则默认 1
+        demand_raw = t.get("demand", 1)
+        if isinstance(demand_raw, dict):
+            demand = demand_raw.get(cap, 1)
+        else:
+            demand = int(demand_raw)
+
+        # 任务时长 = operations × 白名单内设备单操作时长（取最大）
+        per_op_s = max((dev_duration.get(did, 0) for did in dev_ids), default=0)
         duration_s = max(1, operations * per_op_s)
 
         tasks.append(
             Task(
                 id=tid,
                 duration_s=duration_s,
-                required_capabilities=required_caps,
-                eligible_devices=eligible,
+                capability=cap,
+                demand=demand,
+                eligible_devices=dev_ids,
                 earliest_start_s=earliest_start_s,
                 deadline_s=deadline_s,
             )

@@ -2,7 +2,6 @@ import json
 import logging
 from input_parser import parse_input
 from solver import CpSatSolver
-from device_allocator import GreedyDeviceAllocator
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -13,13 +12,12 @@ request, devices, options, batch_id, task_operations = parse_input(
     "input.json", base_ts=BASE_TS, horizon_s=36000
 )
 
-# ② 调度层
+# ② 调度 + 分配（合并层，一次求解产出设备绑定）
 solver = CpSatSolver(options)
-schedule_result = solver.solve(request, now_s=0)
+schedule_result = solver.solve(request=request, devices=devices)
 
-# ③ 分配层
-allocator = GreedyDeviceAllocator(devices=devices, tasks=request.tasks)
-alloc_result = allocator.allocate(schedule_result)
+if schedule_result.unassigned:
+    logging.warning("未能绑定设备的任务：%s", schedule_result.unassigned)
 
 # ④ 输出结果（与 output.json 一致的结构）
 output = {
@@ -28,6 +26,7 @@ output = {
     "makespan": schedule_result.makespan_s,
     "solver": "cpsat",
     "message": schedule_result.message,
+    "unassigned": schedule_result.unassigned,
     "assignments": [
         {
             "task_id": a.task_id,
@@ -36,7 +35,7 @@ output = {
             "end_ts": BASE_TS + a.planned_end_s,
             "operations": task_operations.get(a.task_id, 1),
         }
-        for a in sorted(alloc_result.assignments, key=lambda x: x.planned_start_s)
+        for a in sorted(schedule_result.assignments, key=lambda x: x.planned_start_s)
     ],
 }
 print(json.dumps(output, indent=2, ensure_ascii=False))

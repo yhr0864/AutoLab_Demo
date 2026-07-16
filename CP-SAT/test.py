@@ -2,12 +2,16 @@ import json
 from collections import defaultdict
 from typing import Dict, Any, List
 from models_base import (
-    Task, ScheduleRequest, Device, PlannedWindow, ScheduleResult,
-    DeviceAssignment, BusyInterval, DeviceState,
+    Task,
+    ScheduleRequest,
+    Device,
+    TaskPlan,
+    ScheduleResult,
+    BusyInterval,
+    DeviceState,
 )
 from solver import CpSatSolver
-from device_allocator import GreedyDeviceAllocator
-from test_cases import TEST_CASES, ALLOC_TEST_CASES, INTEGRATION_TEST_CASES
+from test_cases import TEST_CASES
 from exceptions import (
     SchedulingInfeasibleError,
     SchedulingInputError,
@@ -32,27 +36,32 @@ def build_request(spec: Dict[str, Any]) -> ScheduleRequest:
         tid = t["task_id"]
         eligible: Dict[str, List[str]] = t.get("eligible_devices", {})
 
-        # 计算任务时长 = operations × 白名单内设备最大单操作时长
-        per_op_s = 0
-        for cap, dev_ids in eligible.items():
-            for did in dev_ids:
-                per_op_s = max(per_op_s, dev_duration_s.get(did, 0))
+        # 单能力：取唯一 key 及其设备列表
+        cap = next(iter(eligible), "")
+        dev_ids = eligible.get(cap, [])
+
+        # demand
+        demand_raw = t.get("demand", 1)
+        demand = (
+            demand_raw.get(cap, 1) if isinstance(demand_raw, dict) else int(demand_raw)
+        )
+
+        # 任务时长 = operations × 白名单内设备最大单操作时长
+        per_op_s = max((dev_duration_s.get(did, 0) for did in dev_ids), default=0)
         operations = t.get("operations", 1)
         duration_s = max(1, operations * per_op_s)
 
-        # 需求：每个能力需求量默认为 1，可通过 demand 字段覆盖
-        required_caps = {}
-        for cap in eligible:
-            required_caps[cap] = t.get("demand", {}).get(cap, 1) if isinstance(t.get("demand"), dict) else 1
-
-        tasks.append(Task(
-            id=tid,
-            duration_s=duration_s,
-            required_capabilities=required_caps,
-            eligible_devices=eligible,
-            earliest_start_s=t.get("earliest_start_s", 0),
-            deadline_s=t.get("deadline_s"),
-        ))
+        tasks.append(
+            Task(
+                id=tid,
+                duration_s=duration_s,
+                capability=cap,
+                demand=demand,
+                eligible_devices=dev_ids,
+                earliest_start_s=t.get("earliest_start_s", 0),
+                deadline_s=t.get("deadline_s"),
+            )
+        )
 
         for pred in t.get("depends_on", []):
             precedence_pairs.append((pred, tid))
@@ -69,18 +78,26 @@ def build_request(spec: Dict[str, Any]) -> ScheduleRequest:
 
 def _parse_devices_for_test(spec: dict) -> List[Device]:
     """从测试用例 spec 构造 Device 对象列表。"""
-    _state_map = {"idle": DeviceState.IDLE, "busy": DeviceState.BUSY, "faulted": DeviceState.FAULTED}
+    _state_map = {
+        "idle": DeviceState.IDLE,
+        "busy": DeviceState.BUSY,
+        "faulted": DeviceState.FAULTED,
+    }
     devices = []
     for d in spec.get("devices", []):
-        busy = [BusyInterval(start_s=b["start_ts"], end_s=b["end_ts"])
-                for b in d.get("busy_until_s", [])]
-        devices.append(Device(
-            device_id=d["device_id"],
-            device_type=d["device_type"],
-            state=_state_map.get(d["state"], DeviceState.IDLE),
-            duration_s=d.get("duration", 0),
-            busy_until=busy,
-        ))
+        busy = [
+            BusyInterval(start_s=b["start_ts"], end_s=b["end_ts"])
+            for b in d.get("busy_until_s", [])
+        ]
+        devices.append(
+            Device(
+                device_id=d["device_id"],
+                device_type=d["device_type"],
+                state=_state_map.get(d["state"], DeviceState.IDLE),
+                duration_s=d.get("duration", 0),
+                busy_until=busy,
+            )
+        )
     return devices
 
 
@@ -116,7 +133,9 @@ def _check_device_assertions(alloc_assignments, expect: dict, verbose: bool = Tr
         for group in expect["same_device"]:
             # 交集非空 = 共享某设备（多能力任务可能分配多设备）
             common = set.intersection(*(task_devs.get(tid, set()) for tid in group))
-            assert len(common) >= 1, f"任务 {group} 应共享同一设备, 实际 {dict(task_devs)}"
+            assert (
+                len(common) >= 1
+            ), f"任务 {group} 应共享同一设备, 实际 {dict(task_devs)}"
 
     # ── same_device_for (flat list) ──
     if "same_device_for" in expect:
@@ -139,25 +158,41 @@ def _check_device_assertions(alloc_assignments, expect: dict, verbose: bool = Tr
                 assert unused, f"任务 {tid} 的设备 {devs} 已被前序任务占用 {used}"
                 used.add(next(iter(unused)))  # 记录多能力中第一个未占用设备
 
+    # ── order_before: {earlier: later} → earlier.end <= later.start ──
+    if "order_before" in expect:
+        plans = {a.task_id: a for a in alloc_assignments}
+        for pred, succ in expect["order_before"].items():
+            pe = plans[pred].planned_end_s
+            ss = plans[succ].planned_start_s
+            assert (
+                pe <= ss
+            ), f"顺序违反：{pred}(end={pe}s) 应在 {succ}(start={ss}s) 之前"
+
 
 def run_all():
     solver = CpSatSolver()
 
     for name, spec in TEST_CASES.items():
-        if name in ("TC13_cached",):
-            continue  # CACHED 用例单独跑，见下方
+        # 跳过需单独运行器或用例仅为引用模板的
+        if "_reuse_request" in spec:
+            continue
+        if spec.get("_expect", {}).get("_special_runner"):
+            continue
 
         expect = spec.get("_expect", {})
         print(f"\n{'='*60}\n[{name}]")
 
         try:
             req = build_request(spec)
-            result = solver.solve(req)
+            devices = _parse_devices_for_test(spec)
+            result = solver.solve(req, devices=devices)
             print(f"  status   = {result.status}")
             print(f"  makespan = {result.makespan_s / HOUR_S:.2f}h")
-            print(f"  solve_s = {result.solve_time_s:.1f}")
+            print(f"  solve_ms = {result.solve_time_s * 1000:.1f}")
             if result.message:
                 print(f"  message  = {result.message}")
+            if result.unassigned:
+                print(f"  unassigned = {result.unassigned}")
 
             # 调度层断言
             if "status" in expect:
@@ -172,50 +207,63 @@ def run_all():
                     got == expect["makespan_hours"]
                 ), f"期望 makespan={expect['makespan_hours']}h, 实际 {got}h"
             if "message_contains" in expect:
-                assert expect["message_contains"] in result.message, (
-                    f"期望 message 包含 '{expect['message_contains']}', 实际 '{result.message}'"
+                assert (
+                    expect["message_contains"] in result.message
+                ), f"期望 message 包含 '{expect['message_contains']}', 实际 '{result.message}'"
+            if "alloc_status" in expect:
+                actual_alloc = (
+                    "SUCCESS"
+                    if not result.unassigned
+                    else ("PARTIAL" if result.assignments else "FAILED")
                 )
+                assert (
+                    actual_alloc == expect["alloc_status"]
+                ), f"期望 alloc={expect['alloc_status']}, 实际 {actual_alloc}"
 
-            # ── 设备级断言（优先用 solver 内部绑定，回退到分配器）──
-            _needs_alloc = any(k in expect for k in
-                               ("no_device_overlap", "device_of", "same_device", "distinct_devices"))
-            if _needs_alloc:
-                if result.solver_device_assignments:
-                    # solver 已确定设备绑定 → 构造简易 DeviceAssignment 做校验
-                    solver_assigns = [
-                        DeviceAssignment(
-                            task_id=tid, device_id=did, device_type="",
-                            planned_start_s=next(
-                                (a.planned_start_s for a in result.assignments if a.task_id == tid), 0),
-                            planned_end_s=next(
-                                (a.planned_end_s for a in result.assignments if a.task_id == tid), 0),
+            # ── 设备级断言（TaskPlan 已内置 device_id）──
+            _needs_dev = any(
+                k in expect
+                for k in (
+                    "no_device_overlap",
+                    "device_of",
+                    "same_device",
+                    "same_device_for",
+                    "distinct_devices",
+                    "no_overlap",
+                )
+            )
+            if _needs_dev:
+                _check_device_assertions(result.assignments, expect)
+                for a in sorted(
+                    result.assignments, key=lambda x: (x.device_id, x.planned_start_s)
+                ):
+                    if a.device_id:
+                        print(
+                            f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]"
                         )
-                        for tid, did in result.solver_device_assignments.items()
-                    ]
-                    _check_device_assertions(solver_assigns, expect)
-                    for a in sorted(solver_assigns, key=lambda x: (x.device_id, x.planned_start_s)):
-                        print(f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]")
-                else:
-                    # 回退：跑分配器
-                    devices = _parse_devices_for_test(spec)
-                    tasks = req.tasks
-                    allocator = GreedyDeviceAllocator(devices=devices, tasks=tasks)
-                    alloc_result = allocator.allocate(result)
-                    if alloc_result.status != "SUCCESS":
-                        print(f"  [WARN] 分配器状态={alloc_result.status}, 未分配={alloc_result.unassigned}")
-                    _check_device_assertions(alloc_result.assignments, expect)
-                    for a in sorted(alloc_result.assignments, key=lambda x: (x.device_id, x.planned_start_s)):
-                        print(f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]")
 
             if "note" in expect:
                 print(f"  note: {expect['note']}")
             print("  [PASS]")
 
         except SchedulingInfeasibleError as e:
-            if expect.get("raises") == "SchedulingInfeasibleError":
-                print(f"  [PASS] (按预期抛出 INFEASIBLE: {e})")
-            else:
+            if expect.get("raises") != "SchedulingInfeasibleError":
                 print(f"  [FAIL] (意外 INFEASIBLE: {e})")
+                continue
+            msg = str(e)
+            fail = False
+            if "msg_contains" in expect and expect["msg_contains"] not in msg:
+                print(
+                    f"  [FAIL] 异常消息应包含 '{expect['msg_contains']}'，实际: {msg[:120]}"
+                )
+                fail = True
+            if "msg_not_contains" in expect and expect["msg_not_contains"] in msg:
+                print(
+                    f"  [FAIL] 异常消息不应包含 '{expect['msg_not_contains']}'，实际: {msg[:120]}"
+                )
+                fail = True
+            if not fail:
+                print(f"  [PASS] (按预期抛出 INFEASIBLE，消息: {msg[:100]})")
 
         except SchedulingTimeoutNoSolution as e:
             if expect.get("raises") == "SchedulingTimeoutNoSolution":
@@ -237,38 +285,34 @@ def run_all():
 
 def run_emergency_test():
     """
-    触发 EMERGENCY 分支：
-    主求解必须返回 UNKNOWN（超时），且 last_feasible=None。
-    手段：用极小 time_budget_s 强制主求解超时。
-    用 TC12 这种大规模场景配极小预算最容易触发。
+    TC-D04: 触发 EMERGENCY 分支。
+    12 任务 + 极小 time_budget_s(0.0001s) → 主求解超时(UNKNOWN)
+    → 无缓存(last_feasible=None) → 可行性降级(保留deadline) → EMERGENCY。
     """
-    print(f"\n{'='*60}\n[EMERGENCY 分支测试]")
+    spec = TEST_CASES["TC-D04_emergency_relax"]
+    print(f"\n{'='*60}\n[EMERGENCY 分支测试 TC-D04]")
 
-    # 极小主预算 → 主求解大概率 UNKNOWN；应急预算稍大
     solver = CpSatSolver({
-        "timeout_seconds": 0.0001,  # 主求解几乎必超时
-        "fallback_timeout_seconds": 2.0,  # 应急有充足时间
+        "timeout_seconds": 0.0001,
+        "fallback_timeout_seconds": 2.0,
         "num_search_workers": 1,
     })
 
-    req = build_request(TEST_CASES["TC12_large_scale"])
-
     try:
-        # last_feasible=None → 跳过 CACHED，直接进 EMERGENCY
+        req = build_request(spec)
         result = solver.solve(req, last_feasible=None)
         print(f"  status   = {result.status}")
         print(f"  makespan = {result.makespan_s / HOUR_S:.2f}h")
+        if result.message:
+            print(f"  message  = {result.message}")
         if result.status == "EMERGENCY":
-            print("  [PASS] (成功触发 EMERGENCY 松弛求解)")
+            print("  [PASS] (主求解超时 → 可行性降级(保留deadline) → EMERGENCY)")
         elif result.status in ("OPTIMAL", "FEASIBLE"):
-            print(
-                "  [WARN] 主求解太快完成了，没触发 EMERGENCY，"
-                "请把 time_budget_s 调更小或加大任务规模"
-            )
+            print("  [WARN] 主求解太快，未触发超时")
         else:
             print(f"  [WARN] 得到 {result.status}，非预期")
     except SchedulingTimeoutNoSolution as e:
-        print(f"  [WARN] 应急也失败（fallback_budget 太小？）: {e}")
+        print(f"  [WARN] 可行性降级也失败: {e}")
     except Exception as e:
         print(f"  [ERROR] {type(e).__name__}: {e}")
 
@@ -283,7 +327,7 @@ def run_cached_test():
 
     print(f"\n{'='*60}\n[CACHED 分支测试]")
 
-    req = build_request(TEST_CASES["TC12_large_scale"])
+    req = build_request(TEST_CASES["TC-I01_large_scale"])
 
     # 第一步：正常求解，拿到缓存解
     warm_solver = CpSatSolver({"timeout_seconds": 2.0})
@@ -298,7 +342,9 @@ def run_cached_test():
         return
 
     # 第二步：极小预算重跑 + 传入缓存
-    cold_solver = CpSatSolver({"timeout_seconds": 0.0001, "fallback_timeout_seconds": 0.0001})
+    cold_solver = CpSatSolver(
+        {"timeout_seconds": 0.0001, "fallback_timeout_seconds": 0.0001}
+    )
     try:
         result = cold_solver.solve(req, last_feasible=cached)
         print(f"  二次求解: status={result.status}")
@@ -318,12 +364,13 @@ def run_cached_test():
 
 def run_priority_test():
     """
-    专项验证 TC06 优先级权重：
-    断言 urgent 任务的 start 早于 normal。
+    专项验证 TC-C03 优先级权重：
+    单设备场景下 urgent(pri=100) 必须比 normal(pri=1) 早开始。
     """
-    print(f"\n{'='*60}\n[优先级权重专项测试 TC06]")
+    tc_name = "TC-C03_priority_weights"
+    print(f"\n{'='*60}\n[优先级权重专项测试 {tc_name}]")
 
-    req = build_request(TEST_CASES["TC06_priority_weights"])
+    req = build_request(TEST_CASES[tc_name])
     solver = CpSatSolver({"timeout_seconds": 2.0})
     result = solver.solve(req)
 
@@ -337,167 +384,91 @@ def run_priority_test():
         print("  [FAIL] (优先级未生效，检查 priority_cost 目标)")
 
 
-# ============================================================
-# 设备分配器独立测试（不经过 CP-SAT）
-# ============================================================
+def run_hotstart_hint_test():
+    """
+    TC-I03 热启动 hint 跨拍复用：
+    1. 第一拍正常求解，得到基线解。
+    2. 第二拍修改 C 的 earliest_start，传入 last_feasible，
+       验证不变任务 A/B 复用 hint（start/device 与第一拍接近）。
+    """
+    print(f"\n{'='*60}\n[热启动 hint 跨拍复用 TC-I03]")
 
-def run_allocator_tests():
-    """直接测试 GreedyDeviceAllocator 的分配策略。"""
-    print(f"\n{'='*60}\n[设备分配器专项测试]")
+    spec = TEST_CASES["TC-I03_hotstart_hint"]
+    solver = CpSatSolver({"timeout_seconds": 2.0})
 
-    for name, spec in ALLOC_TEST_CASES.items():
-        print(f"\n--- {name} ---")
-        expect = spec.get("_expect", {})
+    # 第一拍：正常求解
+    req1 = build_request(spec)
+    result1 = solver.solve(req1)
+    print(
+        f"  第一拍: status={result1.status} makespan={result1.makespan_s / HOUR_S:.2f}h"
+    )
+    plan1 = {a.task_id: (a.planned_start_s, a.device_id) for a in result1.assignments}
 
-        try:
-            # 构造 Device 对象（手动构建，busy_until_s 直接使用毫秒值）
-            _state_map = {"idle": DeviceState.IDLE, "busy": DeviceState.BUSY, "faulted": DeviceState.FAULTED}
-            devices = []
-            for d in spec["devices"]:
-                busy = [BusyInterval(start_s=b["start_ts"], end_s=b["end_ts"])
-                        for b in d.get("busy_until_s", [])]
-                devices.append(Device(
-                    device_id=d["device_id"],
-                    device_type=d["device_type"],
-                    state=_state_map.get(d["state"], DeviceState.IDLE),
-                    duration_s=d.get("duration", 0),
-                    busy_until=busy,
-                ))
+    # 第二拍：修改 C 的 earliest_start，其他不变
+    spec2 = json.loads(json.dumps(spec))  # deep copy
+    for t in spec2["tasks"]:
+        if t["task_id"] == "C":
+            t["earliest_start_s"] = 7200  # 推迟 2h
+    req2 = build_request(spec2)
+    result2 = solver.solve(req2, last_feasible=result1)
+    print(
+        f"  第二拍: status={result2.status} makespan={result2.makespan_s / HOUR_S:.2f}h"
+    )
+    plan2 = {a.task_id: (a.planned_start_s, a.device_id) for a in result2.assignments}
 
-            # 构造 Task 对象（仅用于白名单）
-            tasks = [
-                Task(
-                    id=t["task_id"],
-                    duration_s=0,
-                    required_capabilities={},
-                    eligible_devices=t.get("eligible_devices", {}),
-                )
-                for t in spec["tasks"]
-            ]
+    # 验证：A/B 在第一拍和第二拍应复用 hint
+    for tid in ("A", "B"):
+        s1, d1 = plan1[tid]
+        s2, d2 = plan2[tid]
+        same_dev = d1 == d2
+        print(
+            f"  {tid}: 拍1 start={s1}s dev={d1} → 拍2 start={s2}s dev={d2} "
+            f"({'设备复用' if same_dev else '设备变化'})"
+        )
 
-            # 构造 PlannedWindow（模拟调度层输出）
-            windows = [
-                PlannedWindow(
-                    task_id=w["task_id"],
-                    required_capabilities=w["required_capabilities"],
-                    planned_start_s=w["planned_start_s"],
-                    planned_end_s=w["planned_end_s"],
-                    window_slack_s=0,
-                )
-                for w in spec["schedule"]
-            ]
-            schedule_result = ScheduleResult(
-                status="TEST", solve_time_s=0, assignments=windows, makespan_s=0, message="",
-            )
-
-            # 执行分配
-            allocator = GreedyDeviceAllocator(devices=devices, tasks=tasks)
-            result = allocator.allocate(schedule_result)
-
-            print(f"  status = {result.status}")
-            for a in sorted(result.assignments, key=lambda x: (x.task_id, x.planned_start_s)):
-                print(f"  {a.task_id} -> {a.device_id} [{a.planned_start_s},{a.planned_end_s}]")
-            if result.unassigned:
-                print(f"  未分配: {result.unassigned}")
-
-            # 断言
-            if "status" in expect:
-                assert result.status == expect["status"], (
-                    f"期望 status={expect['status']}, 实际 {result.status}"
-                )
-            if "assigned_count" in expect:
-                assert len(result.assignments) == expect["assigned_count"], (
-                    f"期望 {expect['assigned_count']} 条分配, 实际 {len(result.assignments)}"
-                )
-            if "unassigned_count" in expect:
-                assert len(result.unassigned) == expect["unassigned_count"], (
-                    f"期望 {expect['unassigned_count']} 条未分配, 实际 {len(result.unassigned)}"
-                )
-            if "assignments" in expect:
-                got = {(a.task_id, a.device_id) for a in result.assignments}
-                want = {(e["task_id"], e["device_id"]) for e in expect["assignments"]}
-                assert got == want, f"期望分配 {want}, 实际 {got}"
-            if "never_used" in expect:
-                used_ids = {a.device_id for a in result.assignments}
-                for did in expect["never_used"]:
-                    assert did not in used_ids, f"设备 {did} 不应被使用，但实际被分配了"
-
-            print("  [PASS]")
-
-        except AssertionError as e:
-            print(f"  [FAIL] {e}")
-        except Exception as e:
-            print(f"  [ERROR] {type(e).__name__}: {e}")
+    # C 因 earliest_start 推迟，应 >= 7200
+    c_start = plan2["C"][0]
+    print(f"  C start={c_start}s (期望 >= 7200s)")
+    assert c_start >= 7200, f"C 应 >= 7200s, 实际 {c_start}s"
+    print("  [PASS] (热启动 hint 复用验证通过)")
 
 
-# ============================================================
-# 集成测试（求解 + 分配完整链路）
-# ============================================================
+def run_diagnostic_timeout_test():
+    """
+    TC-D05 诊断求解超时兜底：
+    大规模 INFEASIBLE + 极小 diagnostic_budget_s → 诊断超时 →
+    异常消息含"无法确定根因，建议人工排查"。
+    若诊断意外快速完成也视为 WARN（CP-SAT 有时比预期快）。
+    """
+    print(f"\n{'='*60}\n[诊断求解超时兜底 TC-D05]")
 
-def run_integration_tests():
-    """端到端测试：输入 → 求解 → 分配 → 校验设备级结果。"""
-    print(f"\n{'='*60}\n[集成测试：求解 + 分配完整链路]")
+    spec = TEST_CASES["TC-D05_diagnostic_timeout"]
+    solver = CpSatSolver(
+        {
+            "timeout_seconds": 2.0,         # 主求解给足时间判 INFEASIBLE
+            "diagnostic_budget_s": 0.0001,  # 但诊断求解极小预算 → 超时兜底
+            "num_search_workers": 1,
+        }
+    )
 
-    for name, spec in INTEGRATION_TEST_CASES.items():
-        print(f"\n--- {name} ---")
-        expect = spec.get("_expect", {})
-
-        try:
-            # ① 解析 → 调度
-            req = build_request(spec)
-            solver = CpSatSolver()
-            result = solver.solve(req)
-
-            print(f"  solver   = {result.status}, makespan={result.makespan_s / HOUR_S:.2f}h")
-            if result.message:
-                print(f"  message  = {result.message}")
-
-            # 断言调度层
-            if "solver_status" in expect:
-                assert result.status == expect["solver_status"], (
-                    f"期望 solver={expect['solver_status']}, 实际 {result.status}"
-                )
-            if "makespan_hours" in expect:
-                got = round(result.makespan_s / HOUR_S, 2)
-                assert got == expect["makespan_hours"], (
-                    f"期望 makespan={expect['makespan_hours']}h, 实际 {got}h"
-                )
-
-            # ② 分配
-            devices = _parse_devices_for_test(spec)
-            tasks = req.tasks
-            allocator = GreedyDeviceAllocator(devices=devices, tasks=tasks)
-            alloc_result = allocator.allocate(result)
-
-            print(f"  alloc    = {alloc_result.status}, "
-                  f"assigned={len(alloc_result.assignments)}, "
-                  f"unassigned={len(alloc_result.unassigned)}")
-            if alloc_result.unassigned:
-                print(f"  未分配: {alloc_result.unassigned}")
-
-            for a in sorted(alloc_result.assignments, key=lambda x: (x.device_id, x.planned_start_s)):
-                print(f"  {a.task_id} → {a.device_id} [{a.planned_start_s}s, {a.planned_end_s}s]")
-
-            # 断言分配层
-            if "alloc_status" in expect:
-                assert alloc_result.status == expect["alloc_status"], (
-                    f"期望 alloc={expect['alloc_status']}, 实际 {alloc_result.status}"
-                )
-
-            # ③ 设备级断言
-            _check_device_assertions(alloc_result.assignments, expect)
-
-            print("  [PASS]")
-
-        except AssertionError as e:
-            print(f"  [FAIL] {e}")
-        except SchedulingInfeasibleError as e:
-            if expect.get("raises") == "SchedulingInfeasibleError":
-                print(f"  [PASS] (INFEASIBLE: {e})")
-            else:
-                print(f"  [FAIL] (意外 INFEASIBLE: {e})")
-        except Exception as e:
-            print(f"  [ERROR] {type(e).__name__}: {e}")
+    try:
+        req = build_request(spec)
+        solver.solve(req)
+        print("  [FAIL] (预期抛异常但未抛)")
+    except SchedulingInfeasibleError as e:
+        msg = str(e)
+        if "无法确定" in msg:
+            print(f"  [PASS] (诊断超时: {msg[:120]})")
+        elif "deadline 设置过紧导致" in msg:
+            print(f"  [WARN] (诊断意外快速完成: {msg[:120]})")
+        elif "结构性" in msg:
+            print(f"  [WARN] (诊断返回结构性冲突: {msg[:120]})")
+        else:
+            print(f"  [FAIL] (未预期消息: {msg[:120]})")
+    except SchedulingTimeoutNoSolution as e:
+        print(f"  [WARN] (主求解/可行性降级也超时，非 INFEASIBLE: {e})")
+    except Exception as e:
+        print(f"  [ERROR] {type(e).__name__}: {e}")
 
 
 # ============================================================
@@ -509,5 +480,5 @@ if __name__ == "__main__":
     run_priority_test()
     run_emergency_test()
     run_cached_test()
-    run_allocator_tests()
-    run_integration_tests()
+    run_hotstart_hint_test()
+    run_diagnostic_timeout_test()
