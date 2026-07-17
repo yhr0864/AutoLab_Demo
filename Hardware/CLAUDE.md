@@ -5,6 +5,21 @@
 - **Meca500** — Mecademic 六轴工业机器人（Python + TCP/IP + RoboDK）
 - **PlanarMotor** — Planar Motor 平面磁悬浮电机系统（XBots/Flyways/PMC）
 
+## ⚠️ 核心规则：检索必引用
+
+**一旦使用 Grep/Read 检索了文档并生成回答，必须在回答末尾附上信息来源标注。
+此规则适用于本目录下所有设备文档（Meca500、PlanarMotor），无例外。**
+
+缺少来源标注 = 违反规则，用户无法确认信息是否来自手册原文。
+
+标注必须包含：
+- 📖 来源文件/URL
+- 检索的关键词列表
+- 引用的章节/页码
+- 检索方式（Grep → Read offset/limit）
+
+（具体格式见各设备章节的 Step 5）
+
 ## PDF 手册自动检索
 
 项目包含两份 Meca500 手册，根据问题类型选择检索目标：
@@ -74,16 +89,16 @@ Step 0 - 中英术语转换（最关键，最容易漏）:
   如果用户提问本身就是英文命令名，直接跳到 Step 1。
 
 Step 1 - Grep 定位:
-  Grep -n -i "英文术语" Hardware/search/manual.txt     ← 编程问题
-  Grep -n -i "英文术语" Hardware/search/user_manual.txt  ← 硬件/安全/安装问题
+  Grep -n -i "英文术语" Hardware/Meca500/search/manual.txt     ← 编程问题
+  Grep -n -i "英文术语" Hardware/Meca500/search/user_manual.txt  ← 硬件/安全/安装问题
   - 必须使用 -n 获取行号，-i 不区分大小写
   - output_mode: "content"，head_limit: 20
   - 如果首选术语无结果，换同义词/相关术语重试
 
 Step 2 - Read 精准读取上下文:
   根据 Step 1 得到的每个命中行号 N：
-  Read Hardware/search/manual.txt, offset=N-30, limit=80
-  （或 Read Hardware/search/user_manual.txt, offset=N-30, limit=80）
+  Read Hardware/Meca500/search/manual.txt, offset=N-30, limit=80
+  （或 Read Hardware/Meca500/search/user_manual.txt, offset=N-30, limit=80）
   如果多个命中点分布在不同的行区间，分别 Read 每个区间。
 
 Step 3 - 交叉引用:
@@ -139,7 +154,7 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
 
 ### 降级策略
 
-- 如果文本文件不存在 → 运行 `bash Hardware/search/extract.sh`
+- 如果文本文件不存在 → 运行 `bash Hardware/Meca500/search/extract.sh`
 - 如果 Grep 无结果 → 换同义词重试 Step 1；仍无结果则 Read PDF 原文件的相关章节
 - 如果 PDF 修改时间比文本文件新 → 提示用户运行 extract.sh 更新
 
@@ -210,13 +225,19 @@ Step 1 - Grep 定位（在对应搜索文件中）:
 
 Step 2 - Read offset/limit 精准读取（同上）
 Step 3 - 交叉引用（可跨文件搜索）
-Step 4 - 综合回答
-Step 5 - 来源标注:
+Step 4 - 综合回答:
+  基于手册原文综合回答，必须引用手册中的具体命令名或章节。
+
+Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
+  以固定格式标注：
+  ```
   ---
   📖 信息来源：Planar Motor Technical Portal (docs.planarmotor.com)
   搜索文件：04-software-manual.txt (Software Manual, 258 docs)
   检索关键词：Move Until, displacement, motion
   检索方式：Grep → Read offset/limit
+  ```
+  如果跨多个搜索文件检索，全部列出。
 ```
 
 ### 文档更新
