@@ -1,9 +1,9 @@
-# CLAUDE.md - Meca500 & PlanarMotor 项目记忆
+# CLAUDE.md - Hardware 项目记忆
 
 ## 项目简介
-本项目包含两个机器人/电机系统的开发工作：
-- **Mecademic Meca500** — 六轴工业机器人，Python 通过 TCP/IP 控制，RoboDK 离线仿真
-- **Planar Motor** — 平面磁悬浮电机系统，XBots/Flyways/PMC 架构
+本目录包含多种机器人/电机系统的开发工作，每个设备为同级子目录：
+- **Meca500** — Mecademic 六轴工业机器人（Python + TCP/IP + RoboDK）
+- **PlanarMotor** — Planar Motor 平面磁悬浮电机系统（XBots/Flyways/PMC）
 
 ## PDF 手册自动检索
 
@@ -74,16 +74,16 @@ Step 0 - 中英术语转换（最关键，最容易漏）:
   如果用户提问本身就是英文命令名，直接跳到 Step 1。
 
 Step 1 - Grep 定位:
-  Grep -n -i "英文术语" MecaPortal/search/manual.txt     ← 编程问题
-  Grep -n -i "英文术语" MecaPortal/search/user_manual.txt  ← 硬件/安全/安装问题
+  Grep -n -i "英文术语" Hardware/search/manual.txt     ← 编程问题
+  Grep -n -i "英文术语" Hardware/search/user_manual.txt  ← 硬件/安全/安装问题
   - 必须使用 -n 获取行号，-i 不区分大小写
   - output_mode: "content"，head_limit: 20
   - 如果首选术语无结果，换同义词/相关术语重试
 
 Step 2 - Read 精准读取上下文:
   根据 Step 1 得到的每个命中行号 N：
-  Read MecaPortal/search/manual.txt, offset=N-30, limit=80
-  （或 Read MecaPortal/search/user_manual.txt, offset=N-30, limit=80）
+  Read Hardware/search/manual.txt, offset=N-30, limit=80
+  （或 Read Hardware/search/user_manual.txt, offset=N-30, limit=80）
   如果多个命中点分布在不同的行区间，分别 Read 每个区间。
 
 Step 3 - 交叉引用:
@@ -139,7 +139,7 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
 
 ### 降级策略
 
-- 如果文本文件不存在 → 运行 `bash MecaPortal/search/extract.sh`
+- 如果文本文件不存在 → 运行 `bash Hardware/search/extract.sh`
 - 如果 Grep 无结果 → 换同义词重试 Step 1；仍无结果则 Read PDF 原文件的相关章节
 - 如果 PDF 修改时间比文本文件新 → 提示用户运行 extract.sh 更新
 
@@ -205,7 +205,7 @@ Step 0 - 中英术语转换（PlanarMotor 专用映射）:
   分组 → group / bond
 
 Step 1 - Grep 定位（在对应搜索文件中）:
-  Grep -n -i "术语" MecaPortal/PlanarMotor/search/04-software-manual.txt
+  Grep -n -i "术语" Hardware/PlanarMotor/search/04-software-manual.txt
   （根据上表选择正确的文件）
 
 Step 2 - Read offset/limit 精准读取（同上）
@@ -223,23 +223,29 @@ Step 5 - 来源标注:
 
 文档源站更新时，重新运行下载脚本即可刷新：
 ```bash
-bash MecaPortal/PlanarMotor/download.sh
+bash Hardware/PlanarMotor/download.sh
 ```
 
 ## 项目目录结构
 
-- `MecaPortal/` — Meca500 机器人项目主目录
-  - `mc-pm-meca500.pdf` — Programming Manual（编程指令、API 参考）
-  - `mc-um-meca500.pdf` — User Manual（安全、安装、硬件规格、维护）
-  - `Prog2.py` — Pick-and-Place 示例（RoboDK API）
-  - `search/manual.txt` — Programming Manual 文本提取（~10,897 行）
-  - `search/user_manual.txt` — User Manual 文本提取（~2,754 行）
-  - `search/extract.sh` — 文本提取脚本（PDF 更新后运行）
-  - `PlanarMotor/` — Planar Motor 平面电机项目
-    - `download.sh` — 文档下载/更新脚本
-    - `docs/` — 580 篇原始 .md 文档（按站点路径组织）
-    - `search/` — 10 组合并搜索文件（按站点章节分组）
-  - `venv/` — Python 虚拟环境
+```
+Hardware/                     ← 硬件文档与代码（可扩展新设备）
+├── CLAUDE.md                 ← 共享项目记忆
+├── Meca500/                  ← Mecademic Meca500 六轴机器人
+│   ├── mc-pm-meca500.pdf     ← Programming Manual（PDF，不入库）
+│   ├── mc-um-meca500.pdf     ← User Manual（PDF，不入库）
+│   ├── Prog2.py              ← Pick-and-Place 示例（RoboDK）
+│   ├── PickPlace_HolePlate.txt ← 孔板抓取放置脚本
+│   ├── *.stl, *.rdk          ← CAD 模型与工作站
+│   └── search/
+│       ├── extract.sh        ← PDF 文本提取脚本
+│       ├── manual.txt        ← Programming Manual 文本（~10,897 行）
+│       └── user_manual.txt   ← User Manual 文本（~2,754 行）
+├── PlanarMotor/              ← Planar Motor 平面电机
+│   ├── download.sh           ← 文档下载/更新脚本
+│   ├── docs/                 ← 580 篇原始 .md（不入库）
+│   └── search/               ← 10 组合并搜索文件（不入库）
+└── venv/                     ← 共享 Python 虚拟环境
 - `GoToPy/` — GoTo Python gRPC 项目
 - `CP-SAT/` — CP-SAT 调度优化
 

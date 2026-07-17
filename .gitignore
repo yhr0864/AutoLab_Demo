@@ -5,11 +5,11 @@ kafka_data
 nats_data
 natsVSkafka/src/nats/data
 **/data/
-# Meca500 - extracted text is derivative, regeneratable via extract.sh
-MecaPortal/search/manual.txt
-MecaPortal/search/user_manual.txt
-# Meca500 - PDFs are large binaries, keep local only
-MecaPortal/*.pdf
-# PlanarMotor - downloaded docs are derivative, regeneratable
-MecaPortal/PlanarMotor/search/
-MecaPortal/PlanarMotor/docs/
+# Hardware - Meca500 extracted text is derivative, regeneratable via extract.sh
+Hardware/Meca500/search/manual.txt
+Hardware/Meca500/search/user_manual.txt
+# Hardware - PDFs are large binaries, keep local only
+Hardware/Meca500/*.pdf
+# Hardware - PlanarMotor downloaded docs are derivative, regeneratable
+Hardware/PlanarMotor/search/
+Hardware/PlanarMotor/docs/
