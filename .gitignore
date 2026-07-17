@@ -10,3 +10,6 @@ MecaPortal/search/manual.txt
 MecaPortal/search/user_manual.txt
 # Meca500 - PDFs are large binaries, keep local only
 MecaPortal/*.pdf
+# PlanarMotor - downloaded docs are derivative, regeneratable
+MecaPortal/PlanarMotor/search/
+MecaPortal/PlanarMotor/docs/

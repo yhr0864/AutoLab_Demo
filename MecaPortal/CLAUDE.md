@@ -1,8 +1,9 @@
-# CLAUDE.md - Meca500 项目记忆
+# CLAUDE.md - Meca500 & PlanarMotor 项目记忆
 
 ## 项目简介
-本项目包含 Mecademic Meca500 六轴工业机器人的相关开发工作。主要编程语言为 Python，
-通过 TCP/IP 协议与机器人通信。项目使用 RoboDK 进行离线仿真。
+本项目包含两个机器人/电机系统的开发工作：
+- **Mecademic Meca500** — 六轴工业机器人，Python 通过 TCP/IP 控制，RoboDK 离线仿真
+- **Planar Motor** — 平面磁悬浮电机系统，XBots/Flyways/PMC 架构
 
 ## PDF 手册自动检索
 
@@ -142,6 +143,89 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
 - 如果 Grep 无结果 → 换同义词重试 Step 1；仍无结果则 Read PDF 原文件的相关章节
 - 如果 PDF 修改时间比文本文件新 → 提示用户运行 extract.sh 更新
 
+## PlanarMotor 文档自动检索
+
+项目从 `https://docs.planarmotor.com/tech-portal` 下载了完整文档（580篇），
+按原始站点结构分为 10 组，每组一个合并后的 `.txt` 搜索文件。
+
+### 搜索文件速查表
+
+| 文件 | 内容 | 文档数 |
+|------|------|--------|
+| `PlanarMotor/search/01-safety.txt` | 安全规范（磁场、防护、STO、废弃处理） | 10 |
+| `PlanarMotor/search/02-getting-started.txt` | 安装入门（场地、机械、电气、软件设置） | 11 |
+| `PlanarMotor/search/03-hardware-specs.txt` | 硬件规格（3/4系列 Flyway/XBot、PMC、配件、认证） | 117 |
+| `PlanarMotor/search/04-software-manual.txt` | **核心** — 全部编程命令（系统/运动/管理/接口） | 258 |
+| `PlanarMotor/search/05-libraries.txt` | 开发库（PC Ethernet、PLC Fieldbus、3D 仿真） | 36 |
+| `PlanarMotor/search/06-planar-motor-tool.txt` | PMT 工具使用（界面、命令训练、配置） | 77 |
+| `PlanarMotor/search/07-application-notes.txt` | 应用指南（冷却、安装板、悬浮高度、急停） | 13 |
+| `PlanarMotor/search/08-training.txt` | 培训（演示视频、教程） | 7 |
+| `PlanarMotor/search/09-troubleshooting.txt` | 故障排除（诊断日志、Fieldbus 快照、PMC 错误） | 4 |
+| `PlanarMotor/search/10-downloads.txt` | 下载（PMC/PMLib/PMT 更新日志） | 47 |
+
+### 触发原则
+
+只要用户的问题涉及 PlanarMotor/平面电机/PM 的任何方面，都应搜索对应文件再回答。
+
+常见触发场景：
+
+| 类型 | 触发词 | 搜索文件 |
+|------|--------|----------|
+| 编程/命令 | planar motor/PM、XBots/Flyway/PMC、motion/运动、levitation/悬浮、zone/区域、trajectory/轨迹、6DOF、G-code、move/jog/arc、group/star-planet/cam | `04-software-manual.txt` |
+| 硬件/规格 | 规格/spec、尺寸/dimension、型号(M3/M4/S3/S4)、PMC 控制器、配件/cable/accessory | `03-hardware-specs.txt` |
+| 安装/设置 | 安装/setup/getting started、机械/mechanical、电气/electrical、冷却/cooling | `02-getting-started.txt` |
+| 安全 | safety/安全、STO、磁场/magnetic、危险/hazard | `01-safety.txt` |
+| PMT 工具 | PMT/Planar Motor Tool、界面/interface、配置/config、jog | `06-planar-motor-tool.txt` |
+| 开发/集成 | library/SDK、Python/C#/LabVIEW、EtherCAT/Profinet/TwinCAT/TIA Portal | `05-libraries.txt` |
+| 故障 | 报错/error/troubleshoot、诊断/diagnostic | `09-troubleshooting.txt` |
+
+### 检索流程
+
+与 Meca500 手册相同（5 步法 + CRITICAL 禁止整读），差异仅在搜索目标不同：
+
+```
+Step 0 - 中英术语转换（PlanarMotor 专用映射）:
+  平面电机 → planar motor / PM
+  动子 → XBot / mover
+  定子 → Flyway / stator
+  控制器 → PMC
+  悬浮 → levitation
+  区域 → zone
+  轨迹 → trajectory
+  同步运动 → synchronous motion
+  圆弧 → arc motion
+  旋转 → rotary / spin / Rz
+  力控 → force mode
+  称重 → weighing / weigh
+  传送带 → conveyor / auto loading
+  边界 → border / cluster linking
+  碰撞避免 → collision avoidance / zone collision
+  急停 → E-Stop / quick stop / STO
+  故障动子 → accident XBot
+  分组 → group / bond
+
+Step 1 - Grep 定位（在对应搜索文件中）:
+  Grep -n -i "术语" MecaPortal/PlanarMotor/search/04-software-manual.txt
+  （根据上表选择正确的文件）
+
+Step 2 - Read offset/limit 精准读取（同上）
+Step 3 - 交叉引用（可跨文件搜索）
+Step 4 - 综合回答
+Step 5 - 来源标注:
+  ---
+  📖 信息来源：Planar Motor Technical Portal (docs.planarmotor.com)
+  搜索文件：04-software-manual.txt (Software Manual, 258 docs)
+  检索关键词：Move Until, displacement, motion
+  检索方式：Grep → Read offset/limit
+```
+
+### 文档更新
+
+文档源站更新时，重新运行下载脚本即可刷新：
+```bash
+bash MecaPortal/PlanarMotor/download.sh
+```
+
 ## 项目目录结构
 
 - `MecaPortal/` — Meca500 机器人项目主目录
@@ -151,6 +235,10 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
   - `search/manual.txt` — Programming Manual 文本提取（~10,897 行）
   - `search/user_manual.txt` — User Manual 文本提取（~2,754 行）
   - `search/extract.sh` — 文本提取脚本（PDF 更新后运行）
+  - `PlanarMotor/` — Planar Motor 平面电机项目
+    - `download.sh` — 文档下载/更新脚本
+    - `docs/` — 580 篇原始 .md 文档（按站点路径组织）
+    - `search/` — 10 组合并搜索文件（按站点章节分组）
   - `venv/` — Python 虚拟环境
 - `GoToPy/` — GoTo Python gRPC 项目
 - `CP-SAT/` — CP-SAT 调度优化
