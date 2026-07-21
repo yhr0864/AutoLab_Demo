@@ -1,0 +1,481 @@
+// =============================================================================
+// PlanarMotor 动子多方向平面运动控制演示 (C# 原生代码)
+// =============================================================================
+// 依赖: PMCLIB (Planar Motor Library for .NET)
+// 平台: Windows + Visual Studio 2015+ (.NET Framework 4.6.1+ / .NET Core)
+// 硬件: Planar Motor PMC + Flyway + XBot
+//
+// 本示例演示 XBot 在平面上沿各个方向的运动控制，包括:
+//   - 直线运动 (8 个方向: N/NE/E/SE/S/SW/W/NW)
+//   - 矩形轨迹循环
+//   - 圆弧运动 (顺时针/逆时针)
+//   - Jog 连续运动
+//   - 旋转运动 (Rz 轴)
+//   - 星形图案轨迹
+// =============================================================================
+
+using System;
+using System.Threading;
+using PMCLIB;
+
+namespace PlanarMotorDemo
+{
+    class MultiDirectionDemo
+    {
+        // PMC 连接对象
+        static IPMCCommands pmc;
+
+        static void Main(string[] args)
+        {
+            Console.WriteLine("=== PlanarMotor 动子多方向平面运动演示 ===\n");
+
+            try
+            {
+                // ---- 第一步: 连接 PMC ----
+                Console.WriteLine("[1/5] 正在连接 PMC...");
+                if (!ConnectToPMC())
+                {
+                    Console.WriteLine("错误: 无法连接到 PMC，请检查网络连接。");
+                    return;
+                }
+                Console.WriteLine("  ✓ PMC 连接成功\n");
+
+                // ---- 第二步: 获取控制权并激活 XBots ----
+                Console.WriteLine("[2/5] 获取控制权并激活 XBots...");
+                PMCRTN rtn = pmc.GainMastership();
+                if (rtn != PMCRTN.ALLOK)
+                {
+                    Console.WriteLine($"  警告: GainMastership 返回 {rtn}");
+                }
+
+                rtn = pmc.ActivateXBOTS(ACTIVATIONMODE.AUTOSCAN);
+                if (rtn != PMCRTN.ALLOK)
+                {
+                    Console.WriteLine($"  错误: ActivateXBOTS 返回 {rtn}");
+                    return;
+                }
+
+                // 等待 PMC 进入 OPERATION 状态
+                WaitForPMCState(PMCState.PMC_OPERATION, 30000);
+                Console.WriteLine("  ✓ XBots 已激活，PMC 进入运行状态\n");
+
+                // ---- 第三步: 悬浮 XBot ----
+                Console.WriteLine("[3/5] 悬浮 XBot 1...");
+                rtn = pmc.LevitationCommand(
+                    xbotID: 1,
+                    levMode: LEVITATEOPTIONS.LEVITATE,
+                    levSpeed: LEVITATIONSPEED.APPROX_800MS,
+                    force: 2.0
+                );
+                Console.WriteLine($"  ✓ LevitationCommand 返回: {rtn}\n");
+
+                int xbotID = 1;     // 要控制的 XBot ID
+                ushort cmdLabel = 0; // 命令标签 (递增以区分命令)
+
+                // ---- 第四步: 多方向运动演示 ----
+                Console.WriteLine("[4/5] 开始多方向运动演示...\n");
+                Console.WriteLine("==============================================");
+
+                // ---------- 演示 1: 八个方向直线运动 ----------
+                Console.WriteLine("--- 演示 1: 八个方向直线运动 (绝对定位) ---");
+                DemoEightDirections(xbotID, ref cmdLabel);
+                WaitForXBotIdle(xbotID);
+
+                // ---------- 演示 2: 矩形轨迹 ----------
+                Console.WriteLine("\n--- 演示 2: 矩形轨迹循环 (相对定位) ---");
+                DemoRectanglePath(xbotID, ref cmdLabel);
+                WaitForXBotIdle(xbotID);
+
+                // ---------- 演示 3: 圆弧运动 ----------
+                Console.WriteLine("\n--- 演示 3: 圆弧运动 (中心+角度模式) ---");
+                DemoArcMotion(xbotID, ref cmdLabel);
+                WaitForXBotIdle(xbotID);
+
+                // ---------- 演示 4: Jog 连续运动 ----------
+                Console.WriteLine("\n--- 演示 4: Jog 速度模式运动 ---");
+                DemoJogMotion(xbotID);
+                WaitForXBotIdle(xbotID);
+
+                // ---------- 演示 5: 星形图案 ----------
+                Console.WriteLine("\n--- 演示 5: 星形图案轨迹 ---");
+                DemoStarPattern(xbotID, ref cmdLabel);
+                WaitForXBotIdle(xbotID);
+
+                Console.WriteLine("\n==============================================");
+                Console.WriteLine("所有运动演示完成!");
+
+                // ---- 第五步: 安全停机 ----
+                Console.WriteLine("\n[5/5] 正在安全停机...");
+                rtn = pmc.StopMotion(0);   // 停止所有 XBots
+                Console.WriteLine($"  StopMotion(All) -> {rtn}");
+
+                rtn = pmc.LevitationCommand(1, LEVITATEOPTIONS.LAND,
+                    LEVITATIONSPEED.APPROX_800MS, 2.0);
+                Console.WriteLine($"  Land XBot 1 -> {rtn}");
+
+                rtn = pmc.DeactivateXBOTS();
+                Console.WriteLine($"  DeactivateXBOTS -> {rtn}");
+                Console.WriteLine("  ✓ 安全停机完成\n");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"\n!!! 异常: {ex.Message}");
+                Console.WriteLine("尝试紧急停止...");
+                try { pmc?.StopMotion(0); } catch { }
+            }
+            finally
+            {
+                Console.WriteLine("演示结束。按任意键退出...");
+                Console.ReadKey();
+            }
+        }
+
+        // =====================================================================
+        // 连接 PMC (自动搜索)
+        // =====================================================================
+        static bool ConnectToPMC()
+        {
+            // 方式 1: 自动搜索 PMC (局域网内)
+            bool connected = pmc.AutoSearchAndConnectToPMC();
+
+            // 方式 2: 指定 IP 连接 (如果知道 PMC IP 地址)
+            // bool connected = pmc.ConnectToSpecificPMC("192.168.10.120");
+
+            return connected;
+        }
+
+        // =====================================================================
+        // 等待 PMC 进入指定状态
+        // =====================================================================
+        static void WaitForPMCState(PMCState targetState, int timeoutMs)
+        {
+            int elapsed = 0;
+            int pollInterval = 200; // 200ms 轮询间隔
+
+            while (elapsed < timeoutMs)
+            {
+                var status = pmc.GetPMCState();
+                if (status == targetState)
+                    return;
+
+                Thread.Sleep(pollInterval);
+                elapsed += pollInterval;
+            }
+            Console.WriteLine($"  警告: 等待 PMC 状态超时 ({timeoutMs}ms)");
+        }
+
+        // =====================================================================
+        // 等待 XBot 进入 Idle 状态
+        // =====================================================================
+        static void WaitForXBotIdle(int xbotID, int timeoutMs = 30000)
+        {
+            int elapsed = 0;
+            int pollInterval = 200;
+
+            while (elapsed < timeoutMs)
+            {
+                var state = pmc.GetXBotState(xbotID);
+                if (state == XBotState.IDLING)
+                    return;
+
+                Thread.Sleep(pollInterval);
+                elapsed += pollInterval;
+            }
+        }
+
+        // =====================================================================
+        // 演示 1: 八个方向直线运动 (从中心点出发)
+        // =====================================================================
+        static void DemoEightDirections(int xbotID, ref ushort cmdLabel)
+        {
+            // 运动参数
+            double centerX = 0.200;     // 中心点 X (m), 200mm
+            double centerY = 0.150;     // 中心点 Y (m), 150mm
+            double stepSize = 0.040;    // 步长 40mm
+            double maxSpeed = 0.5;      // 最大速度 0.5 m/s
+            double maxAccel = 5.0;      // 最大加速度 5 m/s²
+            double endSpeed = 0.0;      // 终点速度为 0 (停稳)
+
+            // 8 个方向向量 (单位向量 × stepSize)
+            // 角度: 0°=+X(E), 90°=+Y(N), 180°=-X(W), 270°=-Y(S)
+            var directions = new (string name, double dx, double dy)[]
+            {
+                ("N  (0°,  +Y)",  0,          stepSize),   // 北
+                ("NE (45°)",      stepSize,  stepSize),   // 东北
+                ("E  (90°, +X)",  stepSize,  0),          // 东
+                ("SE (135°)",     stepSize, -stepSize),   // 东南
+                ("S  (180°, -Y)", 0,         -stepSize),   // 南
+                ("SW (225°)",    -stepSize, -stepSize),   // 西南
+                ("W  (270°, -X)",-stepSize,  0),          // 西
+                ("NW (315°)",    -stepSize,  stepSize),   // 西北
+            };
+
+            Console.WriteLine($"  起点: ({centerX*1000:F0}, {centerY*1000:F0}) mm");
+
+            // 先移动到中心点
+            var rtn = pmc.LinearMotionSI(
+                cmdLabel++, xbotID,
+                POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                centerX, centerY,
+                endSpeed, maxSpeed, maxAccel
+            );
+            Console.WriteLine($"  移动到中心点 -> {rtn.PmcRtn}");
+            WaitForXBotIdle(xbotID);
+
+            // 依次向 8 个方向运动 (去程 + 回程)
+            foreach (var dir in directions)
+            {
+                double targetX = centerX + dir.dx;
+                double targetY = centerY + dir.dy;
+
+                // 去程: 中心 -> 目标方向
+                rtn = pmc.LinearMotionSI(
+                    cmdLabel++, xbotID,
+                    POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                    targetX, targetY,
+                    endSpeed, maxSpeed, maxAccel
+                );
+                Console.WriteLine($"  → {dir.name,-12} 目标({targetX*1000,5:F0},{targetY*1000,5:F0}) mm -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+
+                // 回程: 目标方向 -> 中心
+                rtn = pmc.LinearMotionSI(
+                    cmdLabel++, xbotID,
+                    POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                    centerX, centerY,
+                    endSpeed, maxSpeed, maxAccel
+                );
+                WaitForXBotIdle(xbotID);
+            }
+
+            Console.WriteLine("  ✓ 八个方向运动完成");
+        }
+
+        // =====================================================================
+        // 演示 2: 矩形轨迹循环 (相对定位)
+        // =====================================================================
+        static void DemoRectanglePath(int xbotID, ref ushort cmdLabel)
+        {
+            double startX = 0.100;      // 矩形左下角 X (m)
+            double startY = 0.100;      // 矩形左下角 Y (m)
+            double width  = 0.100;      // 矩形宽 (m)
+            double height = 0.060;      // 矩形高 (m)
+            double maxSpeed = 0.3;      // 最大速度
+            double maxAccel = 3.0;
+            int loops = 2;              // 循环圈数
+
+            // 先移动到矩形起点
+            var rtn = pmc.LinearMotionSI(
+                cmdLabel++, xbotID,
+                POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                startX, startY, 0, maxSpeed, maxAccel
+            );
+            Console.WriteLine($"  移动到矩形起点 ({startX*1000:F0},{startY*1000:F0}) mm -> {rtn.PmcRtn}");
+            WaitForXBotIdle(xbotID);
+
+            for (int loop = 1; loop <= loops; loop++)
+            {
+                Console.WriteLine($"  --- 第 {loop}/{loops} 圈 ---");
+
+                // 使用相对定位沿矩形四边运动
+                // 边 1: +X (右)
+                rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                    POSITIONMODE.RELATIVE, LINEARPATHTYPE.DIRECT,
+                    width, 0, 0, maxSpeed, maxAccel);
+                Console.WriteLine($"  边1: +X ({width*1000:F0} mm) -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+
+                // 边 2: +Y (上)
+                rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                    POSITIONMODE.RELATIVE, LINEARPATHTYPE.DIRECT,
+                    0, height, 0, maxSpeed, maxAccel);
+                Console.WriteLine($"  边2: +Y ({height*1000:F0} mm) -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+
+                // 边 3: -X (左)
+                rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                    POSITIONMODE.RELATIVE, LINEARPATHTYPE.DIRECT,
+                    -width, 0, 0, maxSpeed, maxAccel);
+                Console.WriteLine($"  边3: -X ({-width*1000:F0} mm) -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+
+                // 边 4: -Y (下)
+                rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                    POSITIONMODE.RELATIVE, LINEARPATHTYPE.DIRECT,
+                    0, -height, 0, maxSpeed, maxAccel);
+                Console.WriteLine($"  边4: -Y ({-height*1000:F0} mm) -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+            }
+
+            Console.WriteLine("  ✓ 矩形轨迹完成");
+        }
+
+        // =====================================================================
+        // 演示 3: 圆弧运动 (中心+角度模式)
+        // =====================================================================
+        static void DemoArcMotion(int xbotID, ref ushort cmdLabel)
+        {
+            double maxSpeed = 0.3;
+            double maxAccel = 3.0;
+
+            // --- 3a: 逆时针半圆 (上部) ---
+            // XBot 先移动到圆弧起点 (中心右侧)
+            double arcStartX = 0.300;
+            double arcStartY = 0.150;
+            double arcCenterX = 0.250;
+            double arcCenterY = 0.150;
+            double arcAngle = Math.PI;       // 180° = π rad
+            double arcRadius = 0.050;        // 半径 50mm
+
+            var rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                arcStartX, arcStartY, 0, maxSpeed, maxAccel);
+            Console.WriteLine($"  移动到圆弧起点 -> {rtn.PmcRtn}");
+            WaitForXBotIdle(xbotID);
+
+            // 逆时针 180° 圆弧: 从右侧绕上半圆到左侧
+            rtn = pmc.ArcMotionMetersDegrees(
+                cmdLabel++, xbotID,
+                ARCMODE.CENTERANGLE, ARCTYPE.MINORARC,
+                ARCDIRECTION.COUNTERCLOCKWISE,
+                POSITIONMODE.ABSOLUTE,
+                arcCenterX, arcCenterY,   // 圆心
+                0, maxSpeed, maxAccel,
+                0, arcAngle               // radius 忽略 (CENTERANGLE 模式)
+            );
+            Console.WriteLine($"  逆时针 180° 上半圆弧 -> {rtn.PmcRtn}");
+
+            // 注意: ArcMotionMetersDegrees 在 CENTERANGLE 模式下的 radius 参数被忽略
+            // 圆心=(arcCenterX, arcCenterY), 角度=arcAngle=π, 逆时针
+            WaitForXBotIdle(xbotID);
+
+            // --- 3b: 顺时针半圆 (下部) ---
+            // 当前 XBot 在圆心左侧, 执行顺时针 180° 绕回右侧
+            rtn = pmc.ArcMotionMetersDegrees(
+                cmdLabel++, xbotID,
+                ARCMODE.CENTERANGLE, ARCTYPE.MINORARC,
+                ARCDIRECTION.CLOCKWISE,
+                POSITIONMODE.ABSOLUTE,
+                arcCenterX, arcCenterY,
+                0, maxSpeed, maxAccel,
+                0, arcAngle
+            );
+            Console.WriteLine($"  顺时针 180° 下半圆弧 -> {rtn.PmcRtn}");
+            WaitForXBotIdle(xbotID);
+
+            Console.WriteLine("  ✓ 圆弧运动完成");
+        }
+
+        // =====================================================================
+        // 演示 4: Jog 连续速度模式运动
+        // =====================================================================
+        static void DemoJogMotion(int xbotID)
+        {
+            // Jog 速度模式: 以指定速度和方向连续运动
+            // 方向角度 (rad): 0 = +X, π/2 = +Y, π = -X, 3π/2 = -Y
+
+            double jogSpeed = 0.15;     // Jog 速度 0.15 m/s
+            double jogAccel = 1.0;      // Jog 加速度
+
+            // Jog 沿正 X 方向运动 2 秒
+            Console.WriteLine($"  Jog +X 方向 2 秒 (速度={jogSpeed} m/s)...");
+            pmc.JogVelocity(xbotID, true, 0, jogSpeed, jogAccel);         // 0 rad = +X
+            Thread.Sleep(2000);
+            pmc.StopMotion(xbotID);
+            WaitForXBotIdle(xbotID);
+            Console.WriteLine("  ✓ Jog +X 完成");
+
+            // Jog 沿正 Y 方向运动 2 秒
+            Console.WriteLine($"  Jog +Y 方向 2 秒...");
+            pmc.JogVelocity(xbotID, true, Math.PI / 2, jogSpeed, jogAccel); // π/2 = +Y
+            Thread.Sleep(2000);
+            pmc.StopMotion(xbotID);
+            WaitForXBotIdle(xbotID);
+            Console.WriteLine("  ✓ Jog +Y 完成");
+
+            // Jog 沿 45° 方向 (NE) 运动 2 秒
+            Console.WriteLine($"  Jog 45° (NE) 方向 2 秒...");
+            pmc.JogVelocity(xbotID, true, Math.PI / 4, jogSpeed, jogAccel); // π/4 = 45°
+            Thread.Sleep(2000);
+            pmc.StopMotion(xbotID);
+            WaitForXBotIdle(xbotID);
+            Console.WriteLine("  ✓ Jog 45° (NE) 完成");
+
+            // Jog 负 X 方向运动 2 秒 (回程)
+            Console.WriteLine($"  Jog -X 方向 2 秒 (回程)...");
+            pmc.JogVelocity(xbotID, true, Math.PI, jogSpeed, jogAccel);     // π = -X
+            Thread.Sleep(2000);
+            pmc.StopMotion(xbotID);
+            WaitForXBotIdle(xbotID);
+            Console.WriteLine("  ✓ Jog -X 完成");
+
+            Console.WriteLine("  ✓ Jog 运动演示完成");
+        }
+
+        // =====================================================================
+        // 演示 5: 星形图案轨迹
+        // =====================================================================
+        static void DemoStarPattern(int xbotID, ref ushort cmdLabel)
+        {
+            double centerX = 0.200;     // 星形中心 X (m)
+            double centerY = 0.150;     // 星形中心 Y (m)
+            double outerR = 0.050;      // 外半径 50mm
+            double innerR = 0.020;      // 内半径 20mm
+            double maxSpeed = 0.3;
+            double maxAccel = 3.0;
+
+            // 五角星: 5 个外顶点 + 5 个内顶点
+            // 顶点角度: 从顶部 (-π/2) 开始，每隔 2π/5 = 72°
+            int points = 5;
+            double startAngle = -Math.PI / 2;   // 从正上方开始
+
+            // 先移动到第一个外顶点
+            double firstX = centerX + outerR * Math.Cos(startAngle);
+            double firstY = centerY + outerR * Math.Sin(startAngle);
+
+            var rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                firstX, firstY, 0, maxSpeed, maxAccel);
+            WaitForXBotIdle(xbotID);
+
+            Console.WriteLine($"  绘制五角星 (中心=({centerX*1000:F0},{centerY*1000:F0}) mm)...");
+
+            for (int i = 0; i < points; i++)
+            {
+                // 外顶点角度
+                double outerAngle = startAngle + i * 2 * Math.PI / points;
+                // 内顶点角度 (在外顶点之间)
+                double innerAngle = outerAngle + Math.PI / points;
+
+                // 外顶点坐标
+                double ox = centerX + outerR * Math.Cos(outerAngle);
+                double oy = centerY + outerR * Math.Sin(outerAngle);
+                // 内顶点坐标
+                double ix = centerX + innerR * Math.Cos(innerAngle);
+                double iy = centerY + innerR * Math.Sin(innerAngle);
+
+                // 移动到外顶点
+                rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                    POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                    ox, oy, 0, maxSpeed, maxAccel);
+                Console.WriteLine($"  外顶点 {i+1}: ({ox*1000:F0},{oy*1000:F0}) mm -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+
+                // 移动到内顶点
+                rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                    POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                    ix, iy, 0, maxSpeed, maxAccel);
+                Console.WriteLine($"  内顶点 {i+1}: ({ix*1000:F0},{iy*1000:F0}) mm -> {rtn.PmcRtn}");
+                WaitForXBotIdle(xbotID);
+            }
+
+            // 回到第一个外顶点闭合
+            rtn = pmc.LinearMotionSI(cmdLabel++, xbotID,
+                POSITIONMODE.ABSOLUTE, LINEARPATHTYPE.DIRECT,
+                firstX, firstY, 0, maxSpeed, maxAccel);
+            WaitForXBotIdle(xbotID);
+
+            Console.WriteLine("  ✓ 星形图案完成");
+        }
+    }
+}
