@@ -11,61 +11,45 @@
 ; ╔═══════════════════════════════════════════════════════════════════════════╗
 ; ║  标定区: 所有点位和参数集中在此, 换工位只改这里                          ║
 ; ║  数组格式: [x, y, z, α, β, γ]  mm, deg                                  ║
+; ║                                                                          ║
+; ║  CreateVariable(name, value, cyclicId, override)                         ║
+; ║    override=1: 变量已存在 → 更新值; 不存在 → 创建                        ║
+; ║    每次运行都会生效, 无需先创建再注释, 放心改值即可                       ║
 ; ╚═══════════════════════════════════════════════════════════════════════════╝
-;
-; 首次使用: 执行下方 CreateVariable(第 2 节) 一次, 之后注释掉即可
-; 重新标定: 修改下面 SetVariable 的数值, 重跑程序
-; 也可在 MecaPortal → Configuration → Variables 面板直接改
 
 
 ; =============================================================================
-; 第 1 节: 标定变量 (;;;; 所有点位定义在这里 ;;;;)
+; 第 1 节: 标定变量 (所有点位定义在这里, 改值即生效)
 ; =============================================================================
 
 ; ---- 1.1 孔板抓取位姿 (TCP 在板面, Z 垂直指向板面) ----
 ; ----     α,β 决定板面水平方向; γ 决定绕垂直轴旋转 ----
-SetVariable("pick",  "pose", [324.5, -53.0, 234.4,   0.0, 90.0, 90.0])
+CreateVariable(pick.pose,       [324.5, -53.0, 234.4, 0.0, 90.0, 90.0], 0, 1)
 
 ; ---- 1.2 孔板放置位姿 (α,β 与抓取相同 → 板面保持水平) ----
-SetVariable("place", "pose", [200.0, -53.0, 234.4,   0.0, 90.0, 90.0])
+CreateVariable(place.pose,      [200.0, -53.0, 234.4, 0.0, 90.0, 90.0], 0, 1)
 
 ; ---- 1.3 预抓取安全位姿 (TCP 在抓取位上方, 远离工件) ----
-SetVariable("safe",  "pick",  [324.5, -53.0, 279.4,   0.0, 90.0, 90.0])
+CreateVariable(safe.pick,       [324.5, -53.0, 279.4, 0.0, 90.0, 90.0], 0, 1)
 
 ; ---- 1.4 预放置安全位姿 (TCP 在放置位上方, 远离设备) ----
-SetVariable("safe",  "place", [200.0, -53.0, 279.4,   0.0, 90.0, 90.0])
+CreateVariable(safe.place,      [200.0, -53.0, 279.4, 0.0, 90.0, 90.0], 0, 1)
 
 ; ---- 1.5 Home 关节角 (6 轴, deg) ----
-SetVariable("home",  "joints", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+CreateVariable(home.joints,     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0, 1)
 
 ; ---- 1.6 接近/退避距离 (沿 TCP Z 轴, mm) ----
-SetVariable("dist",  "pick_app",  15.0)    ; Pick:  预抓取→抓取 (TCP Z+)
-SetVariable("dist",  "pick_ret",  15.0)    ; Pick:  抓取→退避  (TCP Z-)
-SetVariable("dist",  "place_app", 15.0)    ; Place: 预放置→放置 (TCP Z+)
-SetVariable("dist",  "place_ret", 15.0)    ; Place: 放置→退避  (TCP Z-)
+CreateVariable(dist.pick_app,   15.0, 0, 1)   ; Pick:  预抓取→抓取 (TCP Z+)
+CreateVariable(dist.pick_ret,   15.0, 0, 1)   ; Pick:  抓取→退避  (TCP Z-)
+CreateVariable(dist.place_app,  15.0, 0, 1)   ; Place: 预放置→放置 (TCP Z+)
+CreateVariable(dist.place_ret,  15.0, 0, 1)   ; Place: 放置→退避  (TCP Z-)
 
 ; ---- 1.7 夹爪等待时间 (确保夹紧/松开完成, s) ----
-SetVariable("time",  "grip", 0.3)
+CreateVariable(time.grip,       0.3, 0, 1)
 
 
 ; =============================================================================
-; 第 2 节: 首次运行 — 创建变量 (变量已存在后可整节注释掉)
-; =============================================================================
-;
-; CreateVariable("pick",  "pose",      [324.5, -53.0, 234.4, 0.0, 90.0, 90.0])
-; CreateVariable("place", "pose",      [200.0, -53.0, 234.4, 0.0, 90.0, 90.0])
-; CreateVariable("safe",  "pick",      [324.5, -53.0, 279.4, 0.0, 90.0, 90.0])
-; CreateVariable("safe",  "place",     [200.0, -53.0, 279.4, 0.0, 90.0, 90.0])
-; CreateVariable("home",  "joints",    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-; CreateVariable("dist",  "pick_app",  15.0)
-; CreateVariable("dist",  "pick_ret",  15.0)
-; CreateVariable("dist",  "place_app", 15.0)
-; CreateVariable("dist",  "place_ret", 15.0)
-; CreateVariable("time",  "grip",      0.3)
-
-
-; =============================================================================
-; 第 3 节: 初始化 — 激活, 回零, 参数, 夹爪张开
+; 第 2 节: 初始化 — 激活, 回零, 参数, 夹爪张开
 ; =============================================================================
 ActivateRobot()
 SetJointVel(75)
@@ -79,11 +63,11 @@ GripperOpen()
 
 
 ; =============================================================================
-; 第 4 节: Pick-and-Place 主循环
+; 第 3 节: Pick-and-Place 主循环
 ; =============================================================================
 ;
-;  *vars.<group>.<name>  展开数组, 等效于逐个传入元素
-;  vars.<group>.<name>   单值变量
+;  *vars.<name>  展开数组 → 逐个传入元素
+;  vars.<name>   单值变量
 ;
 ;  运动序列:
 ;    Home ──MovePose──→ PrePick ──MoveLinRelTrf(Z+)──→ Pick  [GripperClose]
@@ -172,9 +156,7 @@ MoveJoints(*vars.home.joints)
 ; │ vars.time.grip          │ 夹爪等待时间 (默认 0.3) s                       │
 ; └─────────────────────────┴─────────────────────────────────────────────────┘
 ;
-; 重新标定方法 (任选其一):
-;   A. 修改第 1 节 SetVariable 数值 → 重跑程序
-;   B. MecaPortal → Configuration → Variables → 找到对应变量直接改
-;   C. 在线发送: SetVariable("pick", "pose", [新x, 新y, ...])
+; 重新标定: 修改第 1 节 CreateVariable 的数组数值, 重跑即可
+; 也可在线发送: CreateVariable(pick.pose, [新x, 新y, 新z, α, β, γ], 0, 1)
 ;
 ; 安全: 首次运行降速 SetJointVel(10) / SetCartLinVel(5), 无碰撞后恢复
