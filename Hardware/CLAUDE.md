@@ -22,18 +22,20 @@
 
 ## PDF 手册自动检索
 
-项目包含两份 Meca500 手册，根据问题类型选择检索目标：
+项目包含三份 Meca500 手册，根据问题类型选择检索目标：
 
 | 手册 | 文件 | 行数 | 内容范围 |
 |------|------|------|----------|
 | **Programming Manual** | `search/manual.txt` | 10,897 | 编程指令、API、通信协议、命令语法、错误代码 |
 | **User Manual** | `search/user_manual.txt` | 2,754 | 安全规范、安装、技术规格、硬件操作、维护、故障排除 |
+| **Operating Manual** | `search/om_manual.txt` | 893 | MecaPortal GUI 操作（代码编辑器、3D 视图、Jogging、配置菜单） |
 
 ### 如何选择手册
 
 - **编程/指令/API 类问题** → 只搜 `manual.txt`（Programming Manual）
 - **硬件/安全/安装/规格/维护类问题** → 搜 `user_manual.txt`（User Manual），必要时交叉搜 `manual.txt`
-- **不确定类型** → 两个都搜
+- **MecaPortal 软件界面操作类问题** → 搜 `om_manual.txt`（Operating Manual），必要时交叉搜 `manual.txt`
+- **不确定类型** → 都搜
 
 ### 触发原则
 
@@ -43,14 +45,15 @@
 
 | 类型 | 触发词 | 检索目标 |
 |------|--------|----------|
-| 编程/指令 | meca/meca500、机械臂、TCP/TRF/WRF、Move*/Set*、关节/笛卡尔/位姿、Euler 角、夹爪/gripper、奇异点、画圆/圆弧、错误代码、EtherCAT、激活/回零、速度/加速度、负载 | `manual.txt` |
-| 硬件/安全 | 安全/safety、安装/install、规格/spec、尺寸/dimension、重量/weight、散热/温度/temperature、端部安装/end-effector、维护/maintenance、故障/troubleshoot、噪音/noise、EMC、拆解/decommission、CAD | `user_manual.txt` |
+| 编程/指令 | meca/meca500、机械臂、TCP/TRF/WRF、Move*/Set*、关节/笛卡尔/位姿、Euler 角、夹爪/gripper、奇异点、画圆/圆弧、错误代码、EtherCAT、激活/回零、速度/加速度/负载 | `manual.txt` |
+| 硬件/安全 | 安全/safety、安装/install、规格/spec、尺寸/dimension、重量/weight、温度/temperature、端部安装/end-effector、维护/maintenance、故障/troubleshoot、噪音/noise、EMC、拆解/decommission、CAD | `user_manual.txt` |
+| MecaPortal GUI | MecaPortal、操作界面、代码编辑器/code editor、3D 视图/3D view、Jog/点动/手动移动、固件更新/firmware update、日志/log panel、配置菜单/configuration | `om_manual.txt` |
 
 ### 检索流程（必须严格按顺序执行）
 
 ```
 ═══════════════════════════════════════════════════════════════
-CRITICAL: 绝对禁止直接 Read 整个 manual.txt/user_manual.txt。
+CRITICAL: 绝对禁止直接 Read 整个 manual.txt/user_manual.txt/om_manual.txt。
 每次检索必须走 Grep → Read offset/limit 流程。
 Grepless Read = 浪费 context、降低精度、违反分层检索设计。
 ═══════════════════════════════════════════════════════════════
@@ -86,11 +89,21 @@ Step 0 - 中英术语转换（最关键，最容易漏）:
     噪音 → noise / EMC
     拆解/报废 → decommission / disposal
 
+  MecaPortal 界面相关（搜 om_manual.txt）：
+    操作界面 → MecaPortal / interface / panel
+    代码编辑器 → code editor / program / script
+    3D 视图 → 3D view / visualization
+    点动/手动移动 → jog / jogging / manual move
+    固件更新 → firmware / update
+    日志 → log / message
+    配置 → configuration / settings / preferences
+
   如果用户提问本身就是英文命令名，直接跳到 Step 1。
 
 Step 1 - Grep 定位:
-  Grep -n -i "英文术语" Hardware/Meca500/search/manual.txt     ← 编程问题
-  Grep -n -i "英文术语" Hardware/Meca500/search/user_manual.txt  ← 硬件/安全/安装问题
+  Grep -n -i "英文术语" Hardware/Meca500/search/manual.txt      ← 编程问题
+  Grep -n -i "英文术语" Hardware/Meca500/search/user_manual.txt ← 硬件/安全/安装问题
+  Grep -n -i "英文术语" Hardware/Meca500/search/om_manual.txt   ← MecaPortal 界面操作问题
   - 必须使用 -n 获取行号，-i 不区分大小写
   - output_mode: "content"，head_limit: 20
   - 如果首选术语无结果，换同义词/相关术语重试
@@ -98,7 +111,7 @@ Step 1 - Grep 定位:
 Step 2 - Read 精准读取上下文:
   根据 Step 1 得到的每个命中行号 N：
   Read Hardware/Meca500/search/manual.txt, offset=N-30, limit=80
-  （或 Read Hardware/Meca500/search/user_manual.txt, offset=N-30, limit=80）
+  （或 Read .../user_manual.txt / .../om_manual.txt, offset=N-30, limit=80）
   如果多个命中点分布在不同的行区间，分别 Read 每个区间。
 
 Step 3 - 交叉引用:
@@ -151,6 +164,18 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
 | 12 | Decommissioning | p.77 |
 | 13-14 | EMC test results | p.81 |
 | 17 | Terminology | p.95 |
+
+### Operating Manual 章节速查表 (`om_manual.txt`)
+
+| 章节 | 内容 | 印刷页码 |
+|------|------|----------|
+| 4 | Overview of MecaPortal | p.7 |
+| 5 | Updating the robot's firmware | p.10 |
+| 6 | Code editor panel | p.11 |
+| 7 | Log panel | p.21 |
+| 8 | 3D view panel | p.22 |
+| 9 | Jogging panel | p.25 |
+| 10 | Configuration menu | p.35 |
 
 ### 降级策略
 
@@ -253,19 +278,24 @@ bash Hardware/PlanarMotor/download.sh
 Hardware/                     ← 硬件文档与代码（可扩展新设备）
 ├── CLAUDE.md                 ← 共享项目记忆
 ├── Meca500/                  ← Mecademic Meca500 六轴机器人
-│   ├── mc-pm-meca500.pdf     ← Programming Manual（PDF，不入库）
-│   ├── mc-um-meca500.pdf     ← User Manual（PDF，不入库）
-│   ├── Prog2.py              ← Pick-and-Place 示例（RoboDK）
+│   ├── docs/                 ← PDF 手册源文件（不入库）
+│   │   ├── mc-pm-meca500.pdf ← Programming Manual
+│   │   ├── mc-um-meca500.pdf ← User Manual
+│   │   └── mc-om-meca500.pdf ← MecaPortal Operating Manual
+│   ├── search/               ← 文本提取文件（不入库）
+│   │   ├── extract.sh        ← PDF→文本 提取脚本
+│   │   ├── manual.txt        ← Programming Manual (~10,897 行)
+│   │   ├── user_manual.txt   ← User Manual (~2,754 行)
+│   │   └── om_manual.txt     ← Operating Manual (~893 行)
+│   ├── Prog2.py              ← Pick-and-Place 示例（RoboDK API）
 │   ├── PickPlace_HolePlate.txt ← 孔板抓取放置脚本
-│   ├── *.stl, *.rdk          ← CAD 模型与工作站
-│   └── search/
-│       ├── extract.sh        ← PDF 文本提取脚本
-│       ├── manual.txt        ← Programming Manual 文本（~10,897 行）
-│       └── user_manual.txt   ← User Manual 文本（~2,754 行）
+│   ├── meca_workstation.rdk  ← RoboDK 工作站
+│   └── *.stl                 ← CAD 模型
 ├── PlanarMotor/              ← Planar Motor 平面电机
 │   ├── download.sh           ← 文档下载/更新脚本
 │   ├── docs/                 ← 580 篇原始 .md（不入库）
-│   └── search/               ← 10 组合并搜索文件（不入库）
+│   ├── search/               ← 10 组合并搜索文件（不入库）
+│   └── *.py, *.txt, *.md     ← Demo 脚本和说明
 └── venv/                     ← 共享 Python 虚拟环境
 - `GoToPy/` — GoTo Python gRPC 项目
 - `CP-SAT/` — CP-SAT 调度优化
