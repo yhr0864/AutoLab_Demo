@@ -7,10 +7,9 @@ natsVSkafka/src/nats/data
 **/data/
 # Hardware - search/ directories are derivative, regeneratable via download scripts
 Hardware/**/search/
-# Hardware - PDFs are large binaries, keep local only
+# Hardware - PDFs, docs/, .rdk files are large binaries / derivative, keep local only
 Hardware/Meca500/*.pdf
-Hardware/Meca500/docs/*.pdf
-# Hardware - downloaded docs (raw markdown) are derivative
-Hardware/PlanarMotor/docs/
+Hardware/**/docs/
+Hardware/**/*.rdk
 # Hardware - Python virtual environment
 Hardware/venv/

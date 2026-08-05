@@ -1,0 +1,7 @@
+// Subject: bioflow.{tenant}.{env}.{lab}.device._.motor.control.release
+// PublishCore fire-and-forget
+payload := map[string]interface{}{
+    "action":  "release",
+    "ip":      ip,       // 中控台 IP
+    "task_id": taskID,   // transport-{fromTaskID}→{toDevice}
+}

@@ -1,0 +1,10 @@
+ActivateRobot()
+SetJointVel(10)
+SetCartLinVel(5)
+SetCartAcc(200)
+SetGripperForce(30)
+SetGripperVel(50)
+
+Home()
+SetConf(1, 1, 1)
+GripperOpen()

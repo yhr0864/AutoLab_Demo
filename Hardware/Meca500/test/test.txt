@@ -1,20 +1,4 @@
-; =============================================================================
-; Meca500 孔板抓取放置 — MecaPortal 导出格式 (TCP/Text API)
-; =============================================================================
-; 可直接粘贴到 MecaPortal Code Editor → Save → StartProgram(n) 运行
-;
-; 点位来源: Hardware/Meca500/点位.txt
-;
-; 全流程: Home → PrePick → Pick [GripperClose] → PrePick(退避) →
-;         PrePlace → Place [GripperOpen] → PrePlace(退避) → Home
-; =============================================================================
-;
-; ╔═══════════════════════════════════════════════════════════════════════════╗
-; ║  标定区: 所有点位集中在此, 换工位只改这里                                ║
-; ║  数组格式: [x, y, z, α, β, γ]  mm, deg                                  ║
-; ║  CreateVariable(..., 0, 1): 存在则更新, 不存在则创建                      ║
-; ╚═══════════════════════════════════════════════════════════════════════════╝
-
+;此版本代码仅用于机械臂调试动作
 
 ; =============================================================================
 ; 第 1 节: 标定点位 (所有值定义在这里, 改值即生效)
@@ -46,8 +30,8 @@ CreateVariable(time.grip,    0.3, 0, 1)
 ; 第 2 节: 初始化
 ; =============================================================================
 ActivateRobot()
-SetJointVel(75)
-SetCartLinVel(30)
+SetJointVel(10)
+SetCartLinVel(5)
 SetCartAcc(200)
 SetGripperForce(30)
 SetGripperVel(50)
@@ -68,9 +52,7 @@ GripperOpen()
 ; ---- Step 1: Home → PrePick (PTP) ----
 SetBlending(100)
 MoveJoints(*vars.home.joints)
-SetCheckpoint(1)
 MovePose(*vars.pre.pick)
-SetCheckpoint(2)
 
 ; ---- Step 2: PrePick → Pick (直线接近) ----
 SetBlending(0)

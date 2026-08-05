@@ -4,6 +4,7 @@
 本目录包含多种机器人/电机系统的开发工作，每个设备为同级子目录：
 - **Meca500** — Mecademic 六轴工业机器人（Python + TCP/IP + RoboDK）
 - **PlanarMotor** — Planar Motor 平面磁悬浮电机系统（XBots/Flyways/PMC）
+- **pylabrobot** — PyLabRobot 实验室自动化平台文档检索（Python SDK + Sphinx 文档）
 
 ## ⚠️ 核心规则：检索必引用
 
@@ -272,6 +273,153 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
 bash Hardware/PlanarMotor/download.sh
 ```
 
+## PyLabRobot 文档自动检索
+
+PyLabRobot 是一个硬件无关的实验室自动化平台。项目从
+`https://docs.pylabrobot.org/dev/_sources/` 下载了完整文档（109篇），
+按主题分为 7 组，每组一个合并后的 `.txt` 搜索文件。
+
+### 搜索文件速查表
+
+| 文件 | 内容 | 文档数 |
+|------|------|--------|
+| `pylabrobot/search/01-user-guide-core.txt` | 安装入门、机器列表、定义、配置、液体处理、机器无关功能 | 22 |
+| `pylabrobot/search/02-user-guide-manufacturers.txt` | 18 家制造商专页 + Hello-World 教程 | 53 |
+| `pylabrobot/search/03-resources-ontology.txt` | 资源类型系统（Carrier/Container/Deck/Plate/TipRack/Well） | 24 |
+| `pylabrobot/search/04-resources-library.txt` | 23 家制造商的耗材目录（含具体货号） | 27 |
+| `pylabrobot/search/05-contributor-guide.txt` | 开发指南、设备驱动编写、贡献流程 | 8 |
+| `pylabrobot/search/06-cookbook.txt` | 代码示例/菜谱 | 3 |
+| `pylabrobot/search/07-community-and-index.txt` | 首页、社区协议 | 2 |
+
+### 触发原则
+
+只要用户的问题涉及 PyLabRobot / PLR / pylabrobot 的任何方面，**都应搜索对应文件再回答。
+不要凭记忆瞎答。**
+
+常见触发场景：
+
+| 类型 | 触发词 | 搜索文件 |
+|------|--------|----------|
+| 安装/入门 | "install", "pip", "Raspberry Pi", "venv", "how to start", "如何安装", "入门" | `01-user-guide-core.txt` |
+| 液体处理 | "aspirate", "dispense", "tip pickup", "mix", "liquid class", "pipetting", "移液", "吸液", "分液", "混匀" | `01-user-guide-core.txt` |
+| 配置/日志 | "config", "configuration", "logging", "log file", "validation", "配置文件", "日志" | `01-user-guide-core.txt` |
+| 错误处理 | "error handling", "exception", "validation", "错误", "异常" | `01-user-guide-core.txt` |
+| 模拟器/可视化 | "simulator", "visualizer", "deck", "3D view", "模拟", "可视化" | `01-user-guide-core.txt` |
+| Hamilton 相关 | "Hamilton", "STAR", "STARLet", "VENUS", "iSWAP", "CORE gripper", "96 head", "autoload", "汉密尔顿" | `02-user-guide-manufacturers.txt` |
+| Tecan/Agilent/其他制造商 | "Tecan", "Agilent", "Thermo Fisher", "Byonoy", "Inheco", "plate reader", "shaker", "sealer", "weighing", "安捷伦", "赛默飞" | `02-user-guide-manufacturers.txt` |
+| 资源类型系统 | "Resource", "Carrier", "Container", "Deck", "Plate", "TipRack", "Well", "Tube", "Trough", "PlateAdapter", "PlateHolder" | `03-resources-ontology.txt` |
+| 自定义资源 | "custom plate", "define a plate", "custom resource", "custom carrier", "new labware", "自定义", "定义资源" | `03-resources-ontology.txt` |
+| 具体耗材/货号 | "Corning plate", "Eppendorf tube", "Hamilton tip rack", "Falcon", "Greiner", "Nest", "part number", "货号", "康宁", "艾本德" | `04-resources-library.txt` |
+| 开发/贡献 | "add driver", "backend", "contribute", "pull request", "device driver", "开发", "贡献" | `05-contributor-guide.txt` |
+| 代码示例 | "cookbook", "example code", "recipe", "slack notification", "示例", "菜谱" | `06-cookbook.txt` |
+| 社区/引用 | "community", "protocol sharing", "citation", "paper", "cite", "社区", "引用" | `07-community-and-index.txt` |
+
+### 检索流程（必须严格按顺序执行）
+
+```
+═══════════════════════════════════════════════════════════════
+CRITICAL: 绝对禁止直接 Read 整个搜索文件。
+每次检索必须走 Grep → Read offset/limit 流程。
+Grepless Read = 浪费 context、降低精度、违反分层检索设计。
+═══════════════════════════════════════════════════════════════
+
+Step 0 - 中英术语转换（最关键，最容易漏）:
+  PyLabRobot 文档原文是英文，必须先将中文转换为英文技术术语再 Grep：
+
+  实验室自动化通用术语：
+    安装/部署 → installation / setup / pip install / deploy
+    液体处理/移液 → liquid handling / pipetting / aspirate / dispense
+    机械臂/液体工作站 → liquid handler / robot / STAR / Hamilton / Tecan
+    板/孔板 → plate / microplate / well / deep well / MTP / labware
+    吸头/枪头 → tip / tip rack / pipette tip / standard volume tip
+    载体/载架 → carrier / plate carrier / tip carrier / trough carrier
+    定义/自定义 → define / custom / create / definition / resource
+    制造商/品牌 → manufacturer / vendor (Agilent, Hamilton, Corning, etc.)
+    规格/尺寸 → dimension / specification / size_x / size_y / size_z
+    吸液 → aspirate / aspiration
+    分液/排液 → dispense / dispensing
+    混匀 → mix / mixing / homogenize
+    抓取/夹取 → grip / gripper / pick up / CORE gripper / iSWAP
+    模拟器/可视化 → simulator / visualizer / deck layout
+    后端/驱动 → backend / driver / firmware
+    转速/速度 → speed / velocity / rpm / shake speed
+    温度 → temperature / incubator / heater / thermoshake
+    错误/异常 → error / exception / error handling / timeout
+    单板机/树莓派 → Raspberry Pi / RPi
+    协议 → protocol / method / script
+    吸头架 → tip rack / tip carrier
+    孔板/深孔板 → microplate / well plate / deep well plate
+    管子/试管 → tube / tube rack / tube carrier
+    培养皿 → petri-dish / petri dish
+    堆叠 → stack / resource stack
+    适配器 → adapter / plate adapter
+    洗板机 → plate washer / washer
+    封膜机 → sealer / heat sealer
+    离心机 → centrifuge
+    称重/天平 → weighing / scale / balance
+    酶标仪/读板机 → plate reader / absorbance / fluorescence / luminescence
+    PCR/热循环 → PCR / thermocycler / thermal cycler
+    振荡/摇床 → shaker / orbital shaker / shaking
+
+  制造商中英对照（用户可能用中文名）：
+    汉密尔顿 → Hamilton
+    安捷伦 → Agilent
+    赛默飞 → Thermo Fisher
+    艾本德 → Eppendorf
+    康宁 → Corning
+    格雷那 → Greiner
+    法尔康 → Falcon
+
+  如果用户提问本身就是英文术语，直接跳到 Step 1。
+
+Step 1 - Grep 定位（在对应搜索文件中）:
+  Grep -n -i "keyword1|keyword2" Hardware/pylabrobot/search/XX-*.txt
+  - 必须使用 -n 获取行号，-i 不区分大小写
+  - 使用 `|` 对多个同义词进行 OR 搜索
+  - head_limit: 20 避免 context 爆炸
+  - 如果无结果，换更宽泛/简单的词重试
+  - 如果仍无结果，尝试下一个最可能的搜索文件
+  - 不要一次搜所有文件 — 先搜最可能的文件
+
+Step 2 - Read 精准读取上下文:
+  根据 Step 1 得到的每个命中行号 N：
+  Read Hardware/pylabrobot/search/XX-*.txt, offset=N-25, limit=60
+  （每个命中点 ~60 行上下文）
+  如果多个命中点分布在不同的行区间，分别 Read 每个区间。
+  绝对不要 Read 整个搜索文件。
+
+Step 3 - 交叉引用:
+  如果搜索结果引用了其他概念/类型/命令（如 manufacturer 页面
+  提到 Resource 类型），对另一个搜索文件也执行 Grep。
+
+Step 4 - 综合回答:
+  基于文档原文综合回答，引用文档中的具体章节或类名。
+  如果文档没有直接答案，诚实说明并建议查看源码、论坛或 GitHub Issues。
+  不要自己编造 API、资源名称或使用方法。
+
+Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
+  以固定格式标注：
+  ```
+  ---
+  📖 信息来源：PyLabRobot 官方文档 (docs.pylabrobot.org)
+  搜索文件：pylabrobot/search/02-user-guide-manufacturers.txt
+  页面：user_guide/hamilton/star/index, user_guide/hamilton/star/hardware/adjusting-iswap
+  源 URL：
+    https://docs.pylabrobot.org/dev/user_guide/hamilton/star/index.html
+    https://docs.pylabrobot.org/dev/user_guide/hamilton/star/hardware/adjusting-iswap.html
+  检索关键词：iSWAP, adjust, gripper, Hamilton
+  检索方式：Grep → Read offset/limit（~60 行/命中点）
+  ```
+  如果跨多个搜索文件检索，全部列出。
+```
+
+### 文档更新
+
+文档源站更新时，重新运行下载脚本即可刷新：
+```bash
+python Hardware/pylabrobot/download_docs.py
+```
+
 ## 项目目录结构
 
 ```
@@ -296,6 +444,9 @@ Hardware/                     ← 硬件文档与代码（可扩展新设备）
 │   ├── docs/                 ← 580 篇原始 .md（不入库）
 │   ├── search/               ← 10 组合并搜索文件（不入库）
 │   └── *.py, *.txt, *.md     ← Demo 脚本和说明
+├── pylabrobot/               ← PyLabRobot 实验室自动化平台
+│   ├── download_docs.py      ← 文档下载/更新脚本
+│   └── search/               ← 7 组合并搜索文件（不入库）
 └── venv/                     ← 共享 Python 虚拟环境
 - `GoToPy/` — GoTo Python gRPC 项目
 - `CP-SAT/` — CP-SAT 调度优化
