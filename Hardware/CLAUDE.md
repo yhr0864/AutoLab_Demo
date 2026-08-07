@@ -420,6 +420,146 @@ Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
 python Hardware/pylabrobot/download_docs.py
 ```
 
+## NATS 文档自动检索
+
+NATS 是该项目的核心消息基础设施。项目从 `https://docs.nats.io/` 下载了完整文档（846篇），
+按主题分为 10 组，每组一个合并后的 `.txt` 搜索文件。
+
+### 搜索文件速查表
+
+| 文件 | 内容 | 文档数 |
+|------|------|--------|
+| `nats/search/01-concepts.txt` | 核心概念（Subjects, Pub-Sub, Queue Groups, Request-Reply） | 9 |
+| `nats/search/02-jetstream.txt` | JetStream 持久化与流（Stream, Consumer, Mirror, Source, 配置参考） | 84 |
+| `nats/search/03-core-nats.txt` | Core NATS 深度解析（连接生命周期、Header、Scatter-Gather, Subject Mapping） | 12 |
+| `nats/search/04-clustering-deployment.txt` | 集群、部署、拓扑（RAFT、副本、Leaf Node、K8s、滚动升级） | 22 |
+| `nats/search/05-security.txt` | 安全认证与加密（TLS、JWT、NKEY、ACL、Auth Callout） | 11 |
+| `nats/search/06-services-api.txt` | 服务 API / 微服务框架（Endpoint、Discovery、Ping） | 11 |
+| `nats/search/07-kv-object-store.txt` | KV Store & Object Store（Bucket、Watch、TTL、Chunking、Metadata） | 14 |
+| `nats/search/08-monitoring-resilience.txt` | 监控（Prometheus/Grafana）、MQTT、WebSocket、容错客户端 | 27 |
+| `nats/search/09-reference.txt` | 参考文档（nats-server 配置、CLI 工具、协议、系统管理） | 649 |
+| `nats/search/10-tutorials.txt` | 动手教程（Hello NATS、First Stream、Work Queue） | 7 |
+
+### 触发原则
+
+只要用户的问题涉及 NATS 的任何方面，**都应搜索对应文件再回答。
+不要凭记忆瞎答。**
+
+常见触发场景：
+
+| 类型 | 触发词 | 搜索文件 |
+|------|--------|----------|
+| 概念/入门 | NATS/nats、subject/主题、pub-sub/发布订阅、queue group/队列组、request-reply/请求回复、wildcard/通配符、gossip | `01-concepts.txt` |
+| JetStream | jetstream、stream/流、consumer/消费者、pull/push、ack/确认、Nak、dedup/去重、mirror/镜像、source/源、message TTL | `02-jetstream.txt` |
+| Core NATS | connect/连接、header、scatter-gather、scatter gather、ping/pong、reconnect/重连、subject mapping/主题映射 | `03-core-nats.txt` |
+| 集群/部署 | cluster/集群、deploy/部署、route/路由、RAFT、replica/副本、leaf node/叶节点、gateway/网关、k8s/kubernetes、supercluster | `04-clustering-deployment.txt` |
+| 安全 | security/安全、TLS、JWT、NKEY、auth/认证、ACL、authorization/授权、decentralized、operator、account、user | `05-security.txt` |
+| 服务/API | service/服务、endpoint、microservice/微服务、discovery/发现、API | `06-services-api.txt` |
+| KV/对象存储 | kv、key-value/键值、object store/对象存储、bucket、watch/监听、ttl、history、revision/版本 | `07-kv-object-store.txt` |
+| 监控/MQTT | monitoring/监控、prometheus、grafana、mqtt、websocket、health/健康检查、resilient/容错、advisory | `08-monitoring-resilience.txt` |
+| 配置/协议 | nats-server、CLI、nsc、nkey、config/配置、protocol/协议、$SYS、account management、timeout、limits | `09-reference.txt` |
+| 教程/示例 | tutorial/教程、hello world、nats by example、work queue/工作队列 | `10-tutorials.txt` |
+
+### 检索流程（必须严格按顺序执行）
+
+```
+═══════════════════════════════════════════════════════════════
+CRITICAL: 绝对禁止直接 Read 整个搜索文件。
+每次检索必须走 Grep → Read offset/limit 流程。
+Grepless Read = 浪费 context、降低精度、违反分层检索设计。
+═══════════════════════════════════════════════════════════════
+
+Step 0 - 中英术语转换（最关键，最容易漏）:
+  NATS 文档原文是英文，必须先将中文转换为英文技术术语再 Grep：
+
+  NATS 核心术语：
+    主题/科目 → subject
+    发布/订阅 → pub-sub / publish / subscribe
+    队列组 → queue group
+    请求/回复 → request-reply / request reply
+    通配符 → wildcard / * / >
+    流 → stream
+    消费者 → consumer
+    拉取/推送 → pull / push
+    确认 → ack / acknowledge
+    去重 → deduplication / dedup
+    镜像 → mirror
+    源 → source
+    副本 → replica
+    叶节点 → leaf node
+    网关 → gateway
+    集群 → cluster
+    部署 → deployment
+    认证 → auth / authentication / NKEY / JWT
+    授权 → authorization / ACL
+    操作员 → operator
+    账户 → account
+    键值存储 → KV / key-value / key value
+    对象存储 → object store / object storage
+    监视/监听 → watch / monitor / observe
+    服务 → service / endpoint
+    发现 → discovery
+    监控 → monitoring / prometheus / grafana
+    容错 → resilient / resilience / fault tolerant
+    配置 → configuration / config / nats-server.conf
+    协议 → protocol / TCP / MQTT / WebSocket
+    健康检查 → health / healthz / readiness
+    超时 → timeout
+    限制 → limits / rate limit
+    保留策略 → retention policy / interest / work queue / limits
+    交付保证 → at-most-once / at-least-once / exactly-once
+    回放 → replay / reading back
+
+  如果用户提问本身就是英文术语，直接跳到 Step 1。
+
+Step 1 - Grep 定位（在对应搜索文件中）:
+  Grep -n -i "keyword1|keyword2" Hardware/nats/search/XX-*.txt
+  - 必须使用 -n 获取行号，-i 不区分大小写
+  - 使用 `|` 对多个同义词进行 OR 搜索
+  - head_limit: 20 避免 context 爆炸
+  - 如果无结果，换更宽泛/简单的词重试
+  - 如果仍无结果，尝试下一个最可能的搜索文件
+  - 不要一次搜所有文件 — 先搜最可能的文件
+
+Step 2 - Read 精准读取上下文:
+  根据 Step 1 得到的每个命中行号 N：
+  Read Hardware/nats/search/XX-*.txt, offset=N-25, limit=60
+  （每个命中点 ~60 行上下文）
+  如果多个命中点分布在不同的行区间，分别 Read 每个区间。
+  绝对不要 Read 整个搜索文件。
+
+Step 3 - 交叉引用:
+  如果搜索结果引用了其他概念/配置/命令（如 JetStream 页面
+  提到 Cluster 配置），对另一个搜索文件也执行 Grep。
+
+Step 4 - 综合回答:
+  基于文档原文综合回答，引用文档中的具体章节或配置。
+  如果文档没有直接答案，诚实说明并建议查看源码、GitHub Issues 或 Slack 社区。
+  不要自己编造 API、配置项或功能。
+
+Step 5 - 标注信息来源（必须执行，每次回答末尾都要带）:
+  以固定格式标注：
+  ```
+  ---
+  📖 信息来源：NATS 官方文档 (docs.nats.io)
+  搜索文件：nats/search/02-jetstream.txt
+  页面：/learn/jetstream/your-first-stream.md, /learn/jetstream/streams-and-consumers.md
+  源 URL：
+    https://docs.nats.io/learn/jetstream/your-first-stream.md
+    https://docs.nats.io/learn/jetstream/streams-and-consumers.md
+  检索关键词：JetStream, stream, consumer, pull
+  检索方式：Grep → Read offset/limit（~60 行/命中点）
+  ```
+  如果跨多个搜索文件检索，全部列出。
+```
+
+### 文档更新
+
+文档源站更新时，重新运行下载脚本即可刷新：
+```bash
+python Hardware/nats/download_docs.py
+```
+
 ## 项目目录结构
 
 ```
@@ -447,6 +587,9 @@ Hardware/                     ← 硬件文档与代码（可扩展新设备）
 ├── pylabrobot/               ← PyLabRobot 实验室自动化平台
 │   ├── download_docs.py      ← 文档下载/更新脚本
 │   └── search/               ← 7 组合并搜索文件（不入库）
+├── nats/                     ← NATS 消息系统
+│   ├── download_docs.py      ← 文档下载/更新脚本
+│   └── search/               ← 10 组合并搜索文件（不入库）
 └── venv/                     ← 共享 Python 虚拟环境
 - `GoToPy/` — GoTo Python gRPC 项目
 - `CP-SAT/` — CP-SAT 调度优化
