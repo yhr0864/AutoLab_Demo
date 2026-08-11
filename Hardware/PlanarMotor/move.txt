@@ -4,6 +4,6 @@ payload := map[string]interface{}{
     "action":    "move",
     "move_type": moveType,    // "pickup" | "deliver"
     "ip":        ip,          // 中控台 IP
-    "pos":       pos,         // map[string]float64{"x": ..., "y": ...}
+    “station_name”:"station_01_pcr_01", //station_站点编号_设备编号,后期需映射到int（1，2，3，4，5，6）
     "task_id":   taskID,      // transport-{fromTaskID}→{toDevice}
 }
