@@ -39,8 +39,8 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.unit_nats.test_nats_pubsu
 
 ```
 =======================================================
-Move subject:    bioflow.test.lab01.device._.motor.control.move
-Release subject: bioflow.test.lab01.device._.motor.control.release
+Move subject:    bioflow.test.test.lab01.device._.motor.control.move
+Release subject: bioflow.test.test.lab01.device._.motor.control.release
 正在连接 NATS...
 ✓ 已连接: nats://localhost:4222
 ✓ 已订阅 move + release
@@ -73,12 +73,19 @@ Release subject: bioflow.test.lab01.device._.motor.control.release
 
 | 编号 | 测试项 | Subject | Payload | 验证点 |
 |------|--------|---------|---------|--------|
-| 1 | move pickup | `bioflow.test.lab01.device._.motor.control.move` | PCR pickup payload | action/move_type/station_name 正确 |
-| 2 | release | `bioflow.test.lab01.device._.motor.control.release` | Release payload | action/task_id 正确 |
-| 3 | move deliver | `bioflow.test.lab01.device._.motor.control.move` | Sealer deliver payload | action/move_type/station_name 正确 |
-| 4 | subject 格式 | - | - | subject 字符串匹配 move.txt 约定 |
+| 1 | move pickup | `...motor.control.move` | PCR pickup payload | action/move_type/station_name 正确 |
+| 2 | release | `...motor.control.release` | Release payload | action/task_id 正确 |
+| 3 | move deliver | `...motor.control.move` | Sealer deliver payload | action/move_type/station_name 正确 |
+| 4 | subject 格式 | - | - | subject 字符串匹配约定 |
+| 5 | 通配符订阅 | `...motor.control.>` | move payload | 发布到精确 subject 触发通配符 |
+| 6 | arrived subject | - | - | arrived subject 格式正确 |
+| 7 | get_motor_action | - | - | 正确提取 "move"/"release"/"unknown" |
 
 ## Subject 格式
+
+平台前缀 `bioflow` 为硬编码，不可配置。
+
+### 发布端精确 subject
 
 ```
 bioflow.{tenant}.{env}.{lab}.device._.motor.control.{action}
@@ -86,10 +93,31 @@ bioflow.{tenant}.{env}.{lab}.device._.motor.control.{action}
 
 | 参数 | 测试环境值 | 说明 |
 |------|-----------|------|
-| `tenant` | `bioflow` | 租户 |
+| `bioflow` | *(硬编码)* | 平台前缀 |
+| `tenant` | `test` | 租户 |
 | `env` | `test` | 环境 |
 | `lab` | `lab01` | 实验室 |
 | `action` | `move` / `release` | 动作类型 |
+
+示例：`bioflow.test.test.lab01.device._.motor.control.move`
+
+### 订阅端通配符 subject
+
+MotorService 使用通配符一次性订阅两种指令：
+
+```
+bioflow.{tenant}.{env}.{lab}.device._.motor.control.>
+```
+
+`>` 匹配 `move` 和 `release`，action 从 `msg.subject` 提取（第 9 段，索引 8）。
+
+### 状态上报 subject
+
+```
+bioflow.{tenant}.{env}.{lab}.device._.motor.status.arrived
+```
+
+Payload: `{ "task_id": "...", "device_id": "planar_motor-1", "timestamp": "..." }`
 
 ## 使用 nats CLI 手动发布
 
@@ -109,16 +137,17 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.unit_nats.test_nats_pubsu
 
 ```powershell
 # 单引号字符串直接传给管道，--force-stdin 强制从 stdin 读取
-'{"action":"move","move_type":"pickup","ip":"192.168.10.120","station_name":"station_02_pcr_01","task_id":"m1"}' | nats pub --force-stdin bioflow.test.lab01.device._.motor.control.move
+# --server 必须与 test_config.py 的 nats_server 一致
+'{"action":"move","move_type":"pickup","ip":"192.168.0.50","station_name":"station_02_pcr_01","task_id":"m1"}' | nats pub --server nats://10.169.30.21:4222 --force-stdin bioflow.test.test.lab01.device._.motor.control.move
 
-'{"action":"release","ip":"192.168.10.120","task_id":"r1"}' | nats pub --force-stdin bioflow.test.lab01.device._.motor.control.release
+'{"action":"release","ip":"192.168.0.50","task_id":"r1"}' | nats pub --server nats://10.169.30.21:4222 --force-stdin bioflow.test.test.lab01.device._.motor.control.release
 ```
 
 **cmd（> 写临时文件再 < 传入）：**
 
 ```cmd
-echo {"action":"move","move_type":"pickup","ip":"192.168.10.120","station_name":"station_02_pcr_01","task_id":"m1"} > %TEMP%\natspub.json
-nats pub bioflow.test.lab01.device._.motor.control.move < %TEMP%\natspub.json
+echo {"action":"move","move_type":"pickup","ip":"192.168.0.50","station_name":"station_02_pcr_01","task_id":"m1"} > %TEMP%\natspub.json
+nats pub --server nats://10.169.30.21:4222 bioflow.test.test.lab01.device._.motor.control.move < %TEMP%\natspub.json
 ```
 
-终端 1 会实时打印收到的每条消息。
+终端 1 会实时打印每条收到的消息。监听模式同时订阅精确 subject（move/release）和通配符（`motor.control.>`），每条消息会显示其 action（来自 subject）。

@@ -11,7 +11,9 @@
 
 用法:
   # 终端 1: 启动 NATS
-  nats-server                  # 终端 2: 自动化测试
+  nats-server
+
+  # 终端 2: 自动化测试
   python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration
   python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen  # 手动 CLI
 =============================================================================
@@ -28,8 +30,11 @@ import time
 import nats
 
 from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
-from Hardware.PlanarMotor.scheduler_service.service import SchedulerService
-from Hardware.PlanarMotor.scheduler_service.subjects import move_subject
+from Hardware.PlanarMotor.scheduler_service.service import MotorService
+from Hardware.PlanarMotor.scheduler_service.subjects import (
+    arrived_subject,
+    move_subject,
+)
 from Hardware.PlanarMotor.scheduler_service.socket_client import SocketClient
 from Hardware.PlanarMotor.scheduler_service.tests.test_config import get_test_config
 from Hardware.PlanarMotor.scheduler_service.tests.unit_motion.mock_motion_1718 import (
@@ -55,27 +60,29 @@ def _build_cfg():
         lab=tcfg.lab,
         socket_host=tcfg.mock_socket_host,
         socket_port=tcfg.mock_socket_port,
-        motor_ip=tcfg.motor_ip,
+        motor_name=tcfg.motor_name,
+        mock_mode=tcfg.mock_mode,
     )
 
 
 async def _start_stack():
-    """启动 Mock + SchedulerService，返回 (mock, svc, cfg)。失败抛异常。"""
-    mock = MockMotion1718(tcfg.mock_socket_host, tcfg.mock_socket_port)
+    """启动 Mock + MotorService，返回 (mock, svc, cfg)。失败抛异常。"""
+    mock = MockMotion1718(tcfg.mock_socket_host, tcfg.mock_socket_port, silent_status=True)
     threading.Thread(target=mock.start, daemon=True).start()
     time.sleep(0.3)
     logger.info(f"✓ Mock Motion_1718 已启动 :{tcfg.mock_socket_port}")
 
     cfg = _build_cfg()
-    svc = SchedulerService(cfg)
+    svc = MotorService(cfg)
     await svc.start()
-    logger.info("✓ SchedulerService 已启动")
+    logger.info("✓ MotorService 已启动")
     return mock, svc, cfg
 
 
 async def run_test():
     logger.info("=" * 55)
-    logger.info("  集成测试: NATS → Scheduler → Mock Socket")
+    logger.info("  集成测试: NATS → MotorService → Mock Socket")
+    logger.info(f"  mock_mode={tcfg.mock_mode}")
     logger.info("=" * 55)
 
     try:
@@ -87,7 +94,7 @@ async def run_test():
 
     # ---- 发布 NATS move 指令 ----
     nc = await nats.connect(tcfg.nats_server, name="test-publisher", connect_timeout=5)
-    subj = move_subject(cfg)
+    subj = move_subject(cfg)  # 发布仍用精确 subject
     all_passed = True
 
     for tc in tcfg.test_cases:
@@ -100,48 +107,68 @@ async def run_test():
             all_passed = False
             continue
 
+        task_id = f"test-{tc['name']}"
         logger.info(f"\n--- 测试: {tc['name']} ---")
         payload = {
             "action": "move",
             "move_type": tc["move_type"],
-            "ip": tcfg.motor_ip,
+            "ip": "192.168.0.50",
             "station_name": station_name,
-            "task_id": f"test-{tc['name']}",
+            "task_id": task_id,
         }
         await nc.publish(subj, json.dumps(payload, ensure_ascii=False).encode())
-        logger.info(f"  已发布: {subj} → {payload}")
-        await asyncio.sleep(0.5)
+        logger.info(f"  已发布: {subj} → {json.dumps(payload, ensure_ascii=False)}")
 
-        expected_cmd = f"station 1 {station_id}"
-        if expected_cmd in mock.cmd_log:
-            logger.info(f"  ✓ PASS: mock 收到 '{expected_cmd}'")
+        if tcfg.mock_mode:
+            # mock 模式：simExec 3s 后应发布 arrived 事件
+            arrived = None
+
+            async def on_arrived(msg):
+                nonlocal arrived
+                arrived = json.loads(msg.data.decode())
+
+            await nc.subscribe(arrived_subject(cfg), cb=on_arrived)
+            await asyncio.sleep(4.0)  # 等待 3s simExec + 缓冲
+
+            if arrived and arrived.get("task_id") == task_id:
+                logger.info(f"  ✓ PASS: arrived 事件已发布 (task_id={task_id})")
+            else:
+                logger.error(f"  ✗ FAIL: arrived 事件未收到，arrived={arrived}")
+                all_passed = False
         else:
-            logger.error(
-                f"  ✗ FAIL: mock 未收到 '{expected_cmd}', 实际收到: {mock.cmd_log}"
-            )
-            all_passed = False
+            # real 模式：验证 mock socket 收到 station 命令
+            await asyncio.sleep(0.5)
+            expected_cmd = f"station 1 {station_id}"
+            if expected_cmd in mock.cmd_log:
+                logger.info(f"  ✓ PASS: mock 收到 '{expected_cmd}'")
+            else:
+                logger.error(
+                    f"  ✗ FAIL: mock 未收到 '{expected_cmd}', 实际收到: {mock.cmd_log}"
+                )
+                all_passed = False
 
     await nc.close()
 
-    # ---- 到位验证 ----
-    logger.info("\n--- 测试: 到位验证 ---")
-    sc = SocketClient(cfg)
-    sc.send_cmd(f"station {tcfg.verify_mover_id} {tcfg.verify_station_positive}")
+    # ---- 到位验证（仅 real 模式需要 socket）----
+    if not tcfg.mock_mode:
+        logger.info("\n--- 测试: 到位验证 ---")
+        sc = SocketClient(cfg)
+        sc.send_cmd(f"station {tcfg.verify_mover_id} {tcfg.verify_station_positive}")
 
-    pos, neg = tcfg.verify_station_positive, tcfg.verify_station_negative
-    mid = tcfg.verify_mover_id
+        pos, neg = tcfg.verify_station_positive, tcfg.verify_station_negative
+        mid = tcfg.verify_mover_id
 
-    if sc.verify_arrival(mid, pos):
-        logger.info(f"  ✓ PASS: verify_arrival({mid}, {pos}) = True")
-    else:
-        logger.error(f"  ✗ FAIL: verify_arrival({mid}, {pos}) = False (预期 True)")
-        all_passed = False
+        if sc.verify_arrival(mid, pos):
+            logger.info(f"  ✓ PASS: verify_arrival({mid}, {pos}) = True")
+        else:
+            logger.error(f"  ✗ FAIL: verify_arrival({mid}, {pos}) = False (预期 True)")
+            all_passed = False
 
-    if not sc.verify_arrival(mid, neg):
-        logger.info(f"  ✓ PASS: verify_arrival({mid}, {neg}) = False (预期 False)")
-    else:
-        logger.error(f"  ✗ FAIL: verify_arrival({mid}, {neg}) = True (预期 False)")
-        all_passed = False
+        if not sc.verify_arrival(mid, neg):
+            logger.info(f"  ✓ PASS: verify_arrival({mid}, {neg}) = False (预期 False)")
+        else:
+            logger.error(f"  ✗ FAIL: verify_arrival({mid}, {neg}) = True (预期 False)")
+            all_passed = False
 
     # ---- 清理 ----
     await svc.stop()
@@ -153,9 +180,10 @@ async def run_test():
 
 
 async def listen_mode():
-    """持续运行全栈（Mock + SchedulerService），配合终端手动 nats pub 测试。"""
+    """持续运行全栈（Mock + MotorService），配合终端手动 nats pub 测试。"""
     logger.info("=" * 55)
     logger.info("  手动集成测试 — 全栈持续运行")
+    logger.info(f"  mock_mode={tcfg.mock_mode}")
     logger.info("=" * 55)
 
     try:
@@ -166,7 +194,8 @@ async def listen_mode():
         return 1
 
     logger.info("在另一个终端用 nats pub 发送指令:")
-    logger.info(f"    nats pub --force-stdin {move_subject(cfg)}")
+    logger.info(f"    nats pub --server {cfg.nats_server} --force-stdin {move_subject(cfg)}")
+    logger.info("  提示: 发布到精确 subject（如 motor.control.move），服务端通配符订阅会自动匹配")
     logger.info("  Ctrl+C 退出\n")
 
     try:

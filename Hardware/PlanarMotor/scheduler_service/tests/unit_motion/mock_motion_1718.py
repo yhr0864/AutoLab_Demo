@@ -49,9 +49,10 @@ BANNER = (
 class MockMotion1718:
     """模拟 Motion_1718 socket server，有状态"""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8888):
+    def __init__(self, host: str = "127.0.0.1", port: int = 8888, silent_status: bool = False):
         self._host = host
         self._port = port
+        self._silent_status = silent_status  # True = status 命令不打印日志（避免健康检查刷屏）
         # 模拟状态
         self._mover_station: dict[int, int] = {1: 0}  # mover_id → station_id
         self._mover_pos: dict[int, tuple[float, float]] = {1: (232.0, 60.0)}
@@ -100,8 +101,10 @@ class MockMotion1718:
                 if not data:
                     break
 
-                # status 是健康检查静默命令，不记录日志
-                if data != "status":
+                # status 在集成测试中静默（避免健康检查刷屏），手动调试时打印
+                if data == "status" and self._silent_status:
+                    pass  # 不记日志
+                else:
                     logger.info(f"收到: {data}")
                 self._cmd_log.append(data)
                 cmd = data.lower().split()
@@ -111,7 +114,7 @@ class MockMotion1718:
                         mover_id = int(cmd[1])
                         station_id = int(cmd[2])
                         self._mover_station[mover_id] = station_id
-                        time.sleep(0.1)  # 模拟运动耗时
+                        time.sleep(3)  # 模拟小车运动耗时
                         conn.sendall(
                             f"OK: Mover {mover_id} moving to Station {station_id}\n".encode()
                         )

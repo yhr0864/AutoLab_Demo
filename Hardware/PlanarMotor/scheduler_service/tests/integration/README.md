@@ -1,6 +1,6 @@
 # 集成测试
 
-端到端测试，模拟完整链路：NATS → SchedulerService → Mock Motion_1718 socket。
+端到端测试，模拟完整链路：NATS → MotorService → Mock Motion_1718 socket。
 
 ## 文件
 
@@ -12,10 +12,13 @@
 ## 架构
 
 ```
-NATS Server ──(pub)──→ SchedulerService ──(TCP)──→ MockMotion1718
-     │                       │                          │
- 发布 move           真实生产代码               模拟状态机
- payload            (service.py)              (mover 位置 + IDLE)
+NATS Server ──(pub)──→ MotorService ──(TCP)──→ MockMotion1718 (仅 real 模式)
+     │               (通配符订阅)                    │
+     │               motor.control.>         模拟状态机
+ 发布 move            mock_mode:              (mover 位置 + IDLE)
+ payload              True → simExec 3s
+                      False → socket cmd
+                      → motor.status.arrived
 ```
 
 ## 依赖组件
@@ -24,9 +27,9 @@ NATS Server ──(pub)──→ SchedulerService ──(TCP)──→ MockMotio
 |------|------|------|
 | Mock Socket | `../unit_motion/mock_motion_1718.py` | 模拟 Motion_1718 TCP server (端口 8889) |
 | 配置 | `../../config.py` | 测试环境使用 `env=test` |
-| Subject 构建 | `../../subjects.py` | move/release subject 格式 |
-| 调度服务 | `../../service.py` | 真实 SchedulerService |
-| Socket 客户端 | `../../socket_client.py` | 真实 SocketClient |
+| Subject 构建 | `../../subjects.py` | move/release/arrived subject 格式 |
+| 运输服务 | `../../service.py` | MotorService（通配符订阅 motor.control.>） |
+| Socket 客户端 | `../../socket_client.py` | 真实 SocketClient（仅 real 模式使用） |
 
 ## 两种测试方式
 
@@ -52,67 +55,77 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration
 nats-server
 ```
 
-**终端 2 — 启动全栈（Mock + SchedulerService）：**
+**终端 2 — 启动全栈（Mock + MotorService）：**
 ```bash
 python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
 ```
 
 **终端 3 — 手动发布指令（PowerShell）：**
 ```powershell
-'{"action":"move","move_type":"pickup","ip":"192.168.10.120","station_name":"station_02_pcr_01","task_id":"m1"}' | nats pub --force-stdin bioflow.test.lab01.device._.motor.control.move
+# --server 必须与 test_config.py 的 nats_server 一致
+# 发布到精确 subject，MotorService 通过通配符 motor.control.> 自动接收
+'{"action":"move","move_type":"pickup","ip":"192.168.0.50","station_name":"station_02_pcr_01","task_id":"m1"}' | nats pub --server nats://10.169.30.21:4222 --force-stdin bioflow.test.test.lab01.device._.motor.control.move
 
-'{"action":"release","ip":"192.168.10.120","task_id":"r1"}' | nats pub --force-stdin bioflow.test.lab01.device._.motor.control.release
+'{"action":"release","ip":"192.168.0.50","task_id":"r1"}' | nats pub --server nats://10.169.30.21:4222 --force-stdin bioflow.test.test.lab01.device._.motor.control.release
 ```
 
-终端 2 会实时打印：
+终端 2 会实时打印（mock 模式）：
 ```
-[MOVE] type=pickup, station_name=station_02_pcr_01, task_id=m1
-[EXEC] station 1 2 (task_id=m1)
-[ACK] 动子 1 已到达 Station 2 (PMC 确认)
-[ACK] 到位验证通过: Mover 1 @ Station 2
+[motor:planar_motor-1] motor.control.move received: task=m1
+[motor:planar_motor-1] MOTOR task=m1 action=move
+[motor:planar_motor-1] DONE task=m1
+[motor:planar_motor-1] arrived published: m1
 ```
 
 ## 自动化测试流程
 
+**mock_mode=True（默认）**：
+```
+① 启动 Mock Motion_1718 (本机 :8889，新线程 — 备用)
+② 启动 MotorService (连接 NATS，不连 socket)
+③ 通过 NATS 发布 move 指令到精确 subject
+④ 通配符订阅接收 → simExec 3s → 发布 motor.status.arrived
+⑤ 验证 arrived 事件包含正确 task_id
+⑥ 清理资源
+```
+
+**mock_mode=False（real 模式）**：
 ```
 ① 启动 Mock Motion_1718 (本机 :8889，新线程)
-② 启动 SchedulerService (连接 NATS + Mock Socket)
+② 启动 MotorService (连接 NATS + Socket)
 ③ 通过 NATS 发布 move 指令
 ④ 等待调度器处理 (0.5s)
 ⑤ 检查 Mock 是否收到正确的 socket 命令
 ⑥ 测试到位验证 (verify_arrival 正向/反向)
-⑦ 清理资源 (关闭 NATS、停止 Scheduler、停止 Mock)
+⑦ 清理资源
 ```
 
 ## 测试用例
 
-| 编号 | 测试项 | NATS station_name | 预期 Socket 命令 | 验证点 |
-|------|--------|-------------------|-----------------|--------|
-| 1 | PCR pickup | `station_02_pcr_01` | `station 1 2` | Mock cmd_log 包含该命令 |
-| 2 | Sealer deliver | `station_04_sealer_01` | `station 1 4` | Mock cmd_log 包含该命令 |
+| 编号 | 测试项 | NATS station_name | mock 模式验证点 | real 模式验证点 |
+|------|--------|-------------------|----------------|----------------|
+| 1 | PCR pickup | `station_02_pcr_01` | arrived 事件 task_id | Mock cmd_log 包含 `station 1 2` |
+| 2 | Sealer deliver | `station_04_sealer_01` | arrived 事件 task_id | Mock cmd_log 包含 `station 1 4` |
 | 3 | 到位验证 (正向) | - | - | `verify_arrival(1, 4)` = True |
 | 4 | 到位验证 (反向) | - | - | `verify_arrival(1, 99)` = False |
 
-## 预期输出
+## 预期输出（mock 模式）
 
 ```
 =======================================================
-  集成测试: NATS → Scheduler → Mock Socket
+  集成测试: NATS → MotorService → Mock Socket
+  mock_mode=True
 =======================================================
 ✓ Mock Motion_1718 已启动 :8889
-✓ SchedulerService 已启动
+✓ MotorService 已启动
 
 --- 测试: PCR pickup ---
-  已发布: bioflow.test.lab01.device._.motor.control.move → {...}
-  ✓ PASS: mock 收到 'station 1 2'
+  已发布: bioflow.test.test.lab01.device._.motor.control.move → {...}
+  ✓ PASS: arrived 事件已发布 (task_id=test-PCR pickup)
 
 --- 测试: Sealer deliver ---
   已发布: bioflow.test.lab01.device._.motor.control.move → {...}
-  ✓ PASS: mock 收到 'station 1 4'
-
---- 测试: 到位验证 ---
-  ✓ PASS: verify_arrival(1, 4) = True
-  ✓ PASS: verify_arrival(1, 99) = False
+  ✓ PASS: arrived 事件已发布 (task_id=test-Sealer deliver)
 
 =======================================================
   全部测试通过 ✓
@@ -128,7 +141,7 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
 
 ## 常见问题
 
-### "SchedulerService 启动失败"
+### "MotorService 启动失败"
 
 确认 NATS 已启动：
 ```bash

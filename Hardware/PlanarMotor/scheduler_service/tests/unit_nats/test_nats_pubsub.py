@@ -61,6 +61,9 @@ async def _connect_and_subscribe():
     import nats
 
     from Hardware.PlanarMotor.scheduler_service.subjects import (
+        arrived_subject,
+        get_motor_action,
+        motor_control_subject,
         move_subject,
         release_subject,
     )
@@ -68,8 +71,10 @@ async def _connect_and_subscribe():
     cfg = _build_nats_only_cfg()
     move_subj = move_subject(cfg)
     release_subj = release_subject(cfg)
-    logger.info(f"Move subject:    {move_subj}")
-    logger.info(f"Release subject: {release_subj}")
+    ctrl_subj = motor_control_subject(cfg)
+    logger.info(f"Move subject:      {move_subj}")
+    logger.info(f"Release subject:   {release_subj}")
+    logger.info(f"Control wildcard:  {ctrl_subj}")
 
     logger.info("正在连接 NATS...")
     nc = await nats.connect(
@@ -78,29 +83,53 @@ async def _connect_and_subscribe():
         connect_timeout=5,
     )
     logger.info(f"✓ 已连接: {nc.connected_url}")
-    return nc, move_subj, release_subj
+    return nc, move_subj, release_subj, ctrl_subj
 
 
 async def listen_mode():
-    """持续监听 NATS 消息，打印收到的内容，Ctrl+C 退出。"""
+    """持续监听 NATS 消息，打印收到的内容，Ctrl+C 退出。
+
+    同时订阅精确 subject（move/release）和通配符 subject（motor.control.>）。
+    """
     try:
-        nc, move_subj, release_subj = await _connect_and_subscribe()
+        nc, move_subj, release_subj, ctrl_subj = await _connect_and_subscribe()
     except Exception as e:
         logger.error(f"NATS 连接失败: {e}")
         logger.error("请确认 nats-server 已启动: nats-server")
         return 1
 
+    from Hardware.PlanarMotor.scheduler_service.subjects import get_motor_action
+
     async def on_move(msg):
-        payload = json.loads(msg.data.decode())
-        logger.info(f"[{payload.get('task_id', '?')}] ← move: {payload}")
+        try:
+            payload = json.loads(msg.data.decode())
+            logger.info(f"\n{'─'*40}\n📨 MOVE: {json.dumps(payload, ensure_ascii=False, indent=2)}\n{'─'*40}")
+        except Exception as e:
+            logger.error(f"\n❌ move 消息解析失败: {e}\n   raw: {msg.data}")
 
     async def on_release(msg):
-        payload = json.loads(msg.data.decode())
-        logger.info(f"[{payload.get('task_id', '?')}] ← release: {payload}")
+        try:
+            payload = json.loads(msg.data.decode())
+            logger.info(f"\n{'─'*40}\n📨 RELEASE: {json.dumps(payload, ensure_ascii=False, indent=2)}\n{'─'*40}")
+        except Exception as e:
+            logger.error(f"\n❌ release 消息解析失败: {e}\n   raw: {msg.data}")
+
+    async def on_any(msg):
+        """通配符订阅回调：显示 action（来自 subject）和 payload"""
+        action = get_motor_action(msg.subject)
+        try:
+            payload = json.loads(msg.data.decode())
+            logger.info(
+                f"\n{'─'*40}\n📨 [{action.upper()}] subject={msg.subject}\n"
+                f"   payload: {json.dumps(payload, ensure_ascii=False, indent=2)}\n{'─'*40}"
+            )
+        except Exception as e:
+            logger.error(f"\n❌ 消息解析失败: {e}\n   subject={msg.subject}, raw: {msg.data}")
 
     await nc.subscribe(move_subj, cb=on_move)
     await nc.subscribe(release_subj, cb=on_release)
-    logger.info("✓ 已订阅 move + release，等待消息... (Ctrl+C 退出)")
+    await nc.subscribe(ctrl_subj, cb=on_any)
+    logger.info("✓ 已订阅 move + release + motor.control.>，等待消息... (Ctrl+C 退出)")
     logger.info("")
 
     try:
@@ -117,8 +146,13 @@ async def listen_mode():
 async def run_test():
     import nats
 
+    from Hardware.PlanarMotor.scheduler_service.subjects import (
+        arrived_subject,
+        get_motor_action,
+    )
+
     try:
-        nc, move_subj, release_subj = await _connect_and_subscribe()
+        nc, move_subj, release_subj, ctrl_subj = await _connect_and_subscribe()
     except Exception as e:
         logger.error(f"NATS 连接失败: {e}")
         logger.error("请确认 nats-server 已启动: nats-server")
@@ -155,7 +189,7 @@ async def run_test():
     move_payload = {
         "action": "move",
         "move_type": "pickup",
-        "ip": tcfg.motor_ip,
+        "ip": "192.168.0.50",
         "station_name": s1,
         "task_id": "nats-test-1",
     }
@@ -185,7 +219,7 @@ async def run_test():
     logger.info("\n--- 测试 2: 发布 release ---")
     release_payload = {
         "action": "release",
-        "ip": tcfg.motor_ip,
+        "ip": "192.168.0.50",
         "task_id": "nats-test-2",
     }
     data = json.dumps(release_payload, ensure_ascii=False).encode()
@@ -211,7 +245,7 @@ async def run_test():
     move2_payload = {
         "action": "move",
         "move_type": "deliver",
-        "ip": tcfg.motor_ip,
+        "ip": "192.168.0.50",
         "station_name": s2,
         "task_id": "nats-test-3",
     }
@@ -239,8 +273,8 @@ async def run_test():
 
     # ---- 测试 4: subject 格式验证 ----
     logger.info("\n--- 测试 4: subject 格式 ---")
-    expected_move = f"{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.control.move"
-    expected_release = f"{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.control.release"
+    expected_move = f"bioflow.{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.control.move"
+    expected_release = f"bioflow.{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.control.release"
     all_ok = ok and ok2 and ok3
     if move_subj == expected_move:
         logger.info("  ✓ PASS: move subject 格式正确")
@@ -252,6 +286,58 @@ async def run_test():
     else:
         logger.error(f"  ✗ FAIL: release subject = {release_subj} (预期 {expected_release})")
         all_ok = False
+
+    # ---- 测试 5: 通配符订阅验证 ----
+    logger.info("\n--- 测试 5: 通配符订阅 ---")
+    wildcard_received = []
+
+    async def on_wildcard(msg):
+        action = get_motor_action(msg.subject)
+        wildcard_received.append(action)
+
+    await nc.subscribe(ctrl_subj, cb=on_wildcard)
+    await asyncio.sleep(0.2)
+
+    # 发布一条 move 到精确 subject，应触发通配符订阅
+    wildcard_payload = {"action": "move", "task_id": "wildcard-test"}
+    await nc.publish(move_subj, json.dumps(wildcard_payload).encode())
+    await asyncio.sleep(0.5)
+
+    if len(wildcard_received) >= 1 and wildcard_received[0] == "move":
+        logger.info(f"  ✓ PASS: 通配符订阅收到 move (action={wildcard_received[0]})")
+    else:
+        logger.error(f"  ✗ FAIL: 通配符未收到预期消息 (received={wildcard_received})")
+        all_ok = False
+
+    # ---- 测试 6: arrived subject 格式 ----
+    logger.info("\n--- 测试 6: arrived subject ---")
+    arrived_subj = arrived_subject(_build_nats_only_cfg())
+    expected_arrived = f"bioflow.{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.status.arrived"
+    if arrived_subj == expected_arrived:
+        logger.info(f"  ✓ PASS: arrived subject 格式正确")
+    else:
+        logger.error(f"  ✗ FAIL: arrived subject = {arrived_subj} (预期 {expected_arrived})")
+        all_ok = False
+
+    # ---- 测试 7: get_motor_action ----
+    logger.info("\n--- 测试 7: get_motor_action ---")
+    ga_ok = True
+    if get_motor_action(move_subj) == "move":
+        logger.info("  ✓ PASS: get_motor_action(move_subj) = 'move'")
+    else:
+        logger.error(f"  ✗ FAIL: get_motor_action(move_subj) = '{get_motor_action(move_subj)}'")
+        ga_ok = False
+    if get_motor_action(release_subj) == "release":
+        logger.info("  ✓ PASS: get_motor_action(release_subj) = 'release'")
+    else:
+        logger.error(f"  ✗ FAIL: get_motor_action(release_subj) = '{get_motor_action(release_subj)}'")
+        ga_ok = False
+    if get_motor_action("bogus") == "unknown":
+        logger.info("  ✓ PASS: get_motor_action('bogus') = 'unknown'")
+    else:
+        logger.error(f"  ✗ FAIL: get_motor_action('bogus') = '{get_motor_action('bogus')}'")
+        ga_ok = False
+    all_ok = all_ok and ga_ok
 
     # ---- 清理 ----
     await nc.close()

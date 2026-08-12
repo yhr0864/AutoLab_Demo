@@ -1,26 +1,29 @@
-# 调度服务 (Scheduler Service)
+# 电机运输服务 (MotorService)
 
-PlanarMotor 调度服务，作为 NATS 上层指令与 Motion_1718 底层控制之间的桥梁。
+平面电机运输服务（MotorService），独立于设备体系运行，监听 NATS 指令，模拟/控制小车运输，完成后上报到达事件。
 
 ## 架构
 
 ```
-Gateway/NATS ──(subscribe)──→ SchedulerService ──(TCP :8888)──→ Motion_1718 ──(pmclib)──→ PMC
+Gateway/NATS ──(pub move/release)──→ MotorService ──(TCP :8888)──→ Motion_1718 ──(pmclib)──→ PMC
+        ←──(sub motor.status.arrived)──
 ```
 
-- **上行**：通过 NATS 订阅 `move` / `release` 指令（参考 `move.txt` / `release.txt`）
-- **下行**：通过 TCP socket 长连接向 `Motion_1718` 下发 `station` 控制命令
-- **调度**：当前为 passthrough 模式，预留 `_schedule()` 接口供后续扩展
+- **上行**：通过 NATS **通配符**订阅 `motor.control.>`（同时匹配 `move` / `release`）
+- **下行**：
+  - **mock 模式**（默认）：`_sim_exec(3s)` 模拟运输 → 发布 `motor.status.arrived`
+  - **real 模式**：通过 TCP socket 长连接向 `Motion_1718` 下发 `station` 控制命令
+- **不注册、不心跳、不参与设备生命周期**，可同时处理多台小车指令
 
 ## 目录结构
 
 ```
 scheduler_service/
 ├── __init__.py           # 包入口
-├── config.py             # SchedulerConfig — 连接参数 + station 映射表
-├── subjects.py           # NATS subject 构建
+├── config.py             # SchedulerConfig — 连接参数 + station 映射表 + motor 配置
+├── subjects.py           # NATS subject 构建（精确 + 通配符 + arrived + get_motor_action）
 ├── socket_client.py      # SocketClient — 长连接 TCP 通信 / 响应解析 / 到位验证
-├── service.py            # SchedulerService — 主逻辑、静默健康检查
+├── service.py            # MotorService — 通配符订阅、simExec、arrived 发布、健康检查
 ├── main.py               # CLI 入口
 ├── tests/                # 模拟测试（无硬件）
 │   ├── README.md             ← 测试总览
@@ -40,49 +43,52 @@ scheduler_service/
      ↓
 ③ NATS Server              # 消息中间件（可与②并行）
      ↓
-④ scheduler_service        # 本服务
+④ MotorService             # 本服务
 ```
 
 ## 快速开始
 
 ```bash
-# 1. 启动底层服务
-python Hardware/PlanarMotor/Motion_1718.py
-
-# 2. 启动 NATS
-nats-server
-
-# 3. 启动调度服务
+# mock 模式（默认，无需硬件）
 python -m Hardware.PlanarMotor.scheduler_service.main
+
+# real 模式
+python -m Hardware.PlanarMotor.scheduler_service.main --mock-mode false
 ```
 
 ## CLI 参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--nats-server` | `nats://localhost:4222` | NATS 服务器地址 |
-| `--tenant` | `bioflow` | 租户标识 |
+| `--nats-server` | `nats://10.169.30.21:4222` | NATS 服务器地址 |
+| `--tenant` | `default` | 租户标识（bioflow 为硬编码平台前缀） |
 | `--env` | `prod` | 环境标识 |
 | `--lab` | `lab01` | 实验室标识 |
-| `--socket-host` | `127.0.0.1` | Motion_1718 socket 地址 |
-| `--socket-port` | `8888` | Motion_1718 socket 端口 |
-| `--motor-ip` | `192.168.0.50` | 中控台 IP（写入 NATS payload） |
-
-```bash
-# 连接到远程 NATS
-python -m Hardware.PlanarMotor.scheduler_service.main --nats-server nats://10.169.108.55:4222
-
-# 指定 Motion_1718 地址
-python -m Hardware.PlanarMotor.scheduler_service.main --socket-host 192.168.0.50 --socket-port 8888
-```
+| `--socket-host` | `127.0.0.1` | Motion_1718 socket 地址（仅 real 模式） |
+| `--socket-port` | `8888` | Motion_1718 socket 端口（仅 real 模式） |
+| `--motor-name` | `planar_motor-1` | 电机标识名 |
+| `--mock-mode` | `true` | 模拟模式：true=simExec(3s)，false=真实电机控制 |
 
 ## NATS 消息格式
 
-### Subject
+### 订阅（通配符）
+
+MotorService 使用单一通配符订阅，同时接收 move 和 release：
 
 ```
-{tenant}.{env}.{lab}.device._.motor.control.move
-{tenant}.{env}.{lab}.device._.motor.control.release
+{tenant}.{env}.{lab}.device._.motor.control.>
+```
+
+action 从 `msg.subject` 提取（第 8 段，索引 7）。
+
+### 发布（精确 subject）
+
+发布端使用精确 subject：
+
+```
+{tenant}.{env}.{lab}.device._.motor.control.move      ← 发布 move
+{tenant}.{env}.{lab}.device._.motor.control.release    ← 发布 release
+{tenant}.{env}.{lab}.device._.motor.status.arrived     ← 上报到达
 ```
 
 ### Move Payload
@@ -97,14 +103,6 @@ python -m Hardware.PlanarMotor.scheduler_service.main --socket-host 192.168.0.50
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `action` | string | 固定 `"move"` |
-| `move_type` | string | `"pickup"` 或 `"deliver"` |
-| `ip` | string | 中控台 IP |
-| `station_name` | string | 站点标识，需在 `config.py` 的 `device_to_station` 映射表中配置 |
-| `task_id` | string | 任务 ID |
-
 ### Release Payload
 
 ```json
@@ -115,9 +113,19 @@ python -m Hardware.PlanarMotor.scheduler_service.main --socket-host 192.168.0.50
 }
 ```
 
+### Arrived Payload（上报）
+
+```json
+{
+    "task_id":   "transport-001→pcr",
+    "device_id": "planar_motor-1",
+    "timestamp": "2026-08-11T14:08:35+00:00"
+}
+```
+
 ## Station 映射
 
-在 `config.py` 的 `device_to_station` 字典中维护 `station_name` → 站点 ID 的映射：
+在 `config.py` 的 `device_to_station` 字典中维护：
 
 ```python
 device_to_station = {
@@ -126,40 +134,20 @@ device_to_station = {
 }
 ```
 
-## Socket 连接
-
-启动时建立一条 TCP 长连接，所有 `station` / `status` 命令复用该连接，避免频繁握手。
-
-## 到位确认 (ACK)
-
-执行链路中两层确认：
-
-| 层级 | 方式 | 说明 |
-|------|------|------|
-| PMC 一级 ACK | `send_xbot_to_station(wait_for_idle=True)` | PMC 底层阻塞等待动子到达 + IDLE |
-| 应用二级验证 | `SocketClient.verify_arrival()` | 查询 `status` 独立确认动子在目标站点且 IDLE |
-
-## 健康检查
+## 健康检查（仅 real 模式）
 
 后台每 10 秒发送 `status` 检测 socket 连通性，**静默模式**——仅在状态变化（断连/恢复）时记录日志。
 
-| 连接 | 检测方式 | 恢复 |
-|------|---------|------|
-| NATS | `disconnected_cb` / `reconnected_cb` + `error_cb` 回调 | nats-py 自动重连 + 恢复订阅 |
-| Socket | 每 10 秒 `status` 静默探测 | 断连自动重连，仅状态变化时打印日志 |
-
 ## 模拟测试（无硬件）
-
-通过 Mock TCP server 模拟 Motion_1718，无需 PMC 硬件即可验证通信链路。
 
 ```bash
 # 终端 1：启动 NATS
 nats-server
 
-# 终端 2：自动化测试（一键运行所有用例）
+# 终端 2：自动化测试
 python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration
 
-# 或：手动 CLI 测试（全栈持续运行，另开终端 nats pub）
+# 或：手动 CLI 测试
 python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
 ```
 
