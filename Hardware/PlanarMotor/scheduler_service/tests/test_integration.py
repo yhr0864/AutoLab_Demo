@@ -9,22 +9,11 @@
   1. nats-server 已启动 (nats-server)
   2. 不需要 PMC 硬件 / Motion_1718.py
 
-测试流程:
-  ① 启动 Mock Motion_1718 socket server (模拟 :8889)
-  ② 启动 SchedulerService (连接 NATS + mock socket)
-  ③ 通过 NATS 发布 move 指令
-  ④ 检查 mock server 是否收到正确的 socket 命令
-  ⑤ 清理
-
 用法:
   # 终端 1: 启动 NATS
-  nats-server
-
-  # 终端 2: 自动化快速测试
+  nats-server                  # 终端 2: 自动化测试
   python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration
-
-  # 或: 手动 CLI 测试 (持续运行，配合 nats pub)
-  python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
+  python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen  # 手动 CLI
 =============================================================================
 """
 
@@ -36,6 +25,17 @@ import sys
 import threading
 import time
 
+import nats
+
+from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
+from Hardware.PlanarMotor.scheduler_service.service import SchedulerService
+from Hardware.PlanarMotor.scheduler_service.subjects import move_subject
+from Hardware.PlanarMotor.scheduler_service.socket_client import SocketClient
+from Hardware.PlanarMotor.scheduler_service.tests.test_config import get_test_config
+from Hardware.PlanarMotor.scheduler_service.tests.unit_motion.mock_motion_1718 import (
+    MockMotion1718,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -43,166 +43,130 @@ logging.basicConfig(
 )
 logger = logging.getLogger("test")
 
-# 使用不同端口避免与真实 Motion_1718 冲突
-MOCK_SOCKET_PORT = 8889
+tcfg = get_test_config()
+
+
+def _build_cfg():
+    """用测试配置构建 SchedulerConfig"""
+    return SchedulerConfig(
+        nats_server=tcfg.nats_server,
+        tenant=tcfg.tenant,
+        env=tcfg.env,
+        lab=tcfg.lab,
+        socket_host=tcfg.mock_socket_host,
+        socket_port=tcfg.mock_socket_port,
+        motor_ip=tcfg.motor_ip,
+    )
+
+
+async def _start_stack():
+    """启动 Mock + SchedulerService，返回 (mock, svc, cfg)。失败抛异常。"""
+    mock = MockMotion1718(tcfg.mock_socket_host, tcfg.mock_socket_port)
+    threading.Thread(target=mock.start, daemon=True).start()
+    time.sleep(0.3)
+    logger.info(f"✓ Mock Motion_1718 已启动 :{tcfg.mock_socket_port}")
+
+    cfg = _build_cfg()
+    svc = SchedulerService(cfg)
+    await svc.start()
+    logger.info("✓ SchedulerService 已启动")
+    return mock, svc, cfg
 
 
 async def run_test():
-    # ---- 延迟导入（使用从 repo root 的绝对路径） ----
-    from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
-    from Hardware.PlanarMotor.scheduler_service.service import SchedulerService
-    from Hardware.PlanarMotor.scheduler_service.subjects import move_subject
-    from Hardware.PlanarMotor.scheduler_service.tests.unit_motion.mock_motion_1718 import MockMotion1718
-
     logger.info("=" * 55)
     logger.info("  集成测试: NATS → Scheduler → Mock Socket")
     logger.info("=" * 55)
 
-    # ---- ① 启动 Mock Socket Server ----
-    mock = MockMotion1718("127.0.0.1", MOCK_SOCKET_PORT)
-    mock_thread = threading.Thread(target=mock.start, daemon=True)
-    mock_thread.start()
-    time.sleep(0.3)
-    logger.info(f"✓ Mock Motion_1718 已启动 :{MOCK_SOCKET_PORT}")
-
-    # ---- ② 启动 SchedulerService ----
-    cfg = SchedulerConfig(
-        nats_server="nats://localhost:4222",
-        tenant="bioflow",
-        env="test",
-        lab="lab01",
-        socket_host="127.0.0.1",
-        socket_port=MOCK_SOCKET_PORT,
-        motor_ip="192.168.10.120",
-    )
-    svc = SchedulerService(cfg)
-
     try:
-        await svc.start()
+        mock, svc, cfg = await _start_stack()
     except Exception as e:
-        logger.error(f"SchedulerService 启动失败: {e}")
+        logger.error(f"启动失败: {e}")
         logger.error("请确认 nats-server 已启动: nats-server")
-        mock.stop()
         return False
 
-    logger.info("✓ SchedulerService 已启动")
-
-    # ---- ③ 发布 NATS move 指令 ----
-    import nats
-
-    nc = await nats.connect("nats://localhost:4222", name="test-publisher", connect_timeout=5)
-
-    test_cases = [
-        {
-            "name": "PCR pickup",
-            "station_name": "station_02_pcr_01",
-            "expected_cmd": "station 1 2",
-        },
-        {
-            "name": "Sealer deliver",
-            "station_name": "station_04_sealer_01",
-            "expected_cmd": "station 1 4",
-        },
-    ]
-
+    # ---- 发布 NATS move 指令 ----
+    nc = await nats.connect(tcfg.nats_server, name="test-publisher", connect_timeout=5)
+    subj = move_subject(cfg)
     all_passed = True
-    for tc in test_cases:
-        logger.info(f"\n--- 测试: {tc['name']} ---")
 
+    for tc in tcfg.test_cases:
+        station_name = tc["station_name"]
+        station_id = tcfg.device_to_station.get(station_name)
+        if station_id is None:
+            logger.error(
+                f"  ✗ FAIL: station_name '{station_name}' 不在 device_to_station 映射中"
+            )
+            all_passed = False
+            continue
+
+        logger.info(f"\n--- 测试: {tc['name']} ---")
         payload = {
             "action": "move",
-            "move_type": "pickup",
-            "ip": "192.168.10.120",
-            "station_name": tc["station_name"],
+            "move_type": tc["move_type"],
+            "ip": tcfg.motor_ip,
+            "station_name": station_name,
             "task_id": f"test-{tc['name']}",
         }
-        subj = move_subject(cfg)
-        data = json.dumps(payload, ensure_ascii=False).encode()
-        await nc.publish(subj, data)
+        await nc.publish(subj, json.dumps(payload, ensure_ascii=False).encode())
         logger.info(f"  已发布: {subj} → {payload}")
-
-        # 等待调度器处理
         await asyncio.sleep(0.5)
 
-        # 检查 mock 是否收到正确命令
-        expected = tc["expected_cmd"]
-        if expected in mock.cmd_log:
-            logger.info(f"  ✓ PASS: mock 收到 '{expected}'")
+        expected_cmd = f"station 1 {station_id}"
+        if expected_cmd in mock.cmd_log:
+            logger.info(f"  ✓ PASS: mock 收到 '{expected_cmd}'")
         else:
-            logger.error(f"  ✗ FAIL: mock 未收到 '{expected}', 实际收到: {mock.cmd_log}")
+            logger.error(
+                f"  ✗ FAIL: mock 未收到 '{expected_cmd}', 实际收到: {mock.cmd_log}"
+            )
             all_passed = False
 
     await nc.close()
 
-    # ---- ④ 测试到位验证（mover 最后在 Station 4） ----
-    logger.info(f"\n--- 测试: 到位验证 ---")
-    from Hardware.PlanarMotor.scheduler_service.socket_client import SocketClient
+    # ---- 到位验证 ----
+    logger.info("\n--- 测试: 到位验证 ---")
     sc = SocketClient(cfg)
-    # mover 已在 Station 4（上一步 Sealer deliver 的结果）
-    verified = sc.verify_arrival(1, 4)
-    if verified:
-        logger.info(f"  ✓ PASS: verify_arrival(1, 4) = True")
+    sc.send_cmd(f"station {tcfg.verify_mover_id} {tcfg.verify_station_positive}")
+
+    pos, neg = tcfg.verify_station_positive, tcfg.verify_station_negative
+    mid = tcfg.verify_mover_id
+
+    if sc.verify_arrival(mid, pos):
+        logger.info(f"  ✓ PASS: verify_arrival({mid}, {pos}) = True")
     else:
-        logger.error(f"  ✗ FAIL: verify_arrival(1, 4) = False (预期 True)")
+        logger.error(f"  ✗ FAIL: verify_arrival({mid}, {pos}) = False (预期 True)")
         all_passed = False
 
-    # 反向验证：不存在的站点应返回 False
-    verified_false = sc.verify_arrival(1, 99)
-    if not verified_false:
-        logger.info(f"  ✓ PASS: verify_arrival(1, 99) = False (预期 False)")
+    if not sc.verify_arrival(mid, neg):
+        logger.info(f"  ✓ PASS: verify_arrival({mid}, {neg}) = False (预期 False)")
     else:
-        logger.error(f"  ✗ FAIL: verify_arrival(1, 99) = True (预期 False)")
+        logger.error(f"  ✗ FAIL: verify_arrival({mid}, {neg}) = True (预期 False)")
         all_passed = False
 
-    # ---- ⑤ 清理 ----
+    # ---- 清理 ----
     await svc.stop()
     mock.stop()
     logger.info("\n" + "=" * 55)
-    if all_passed:
-        logger.info("  全部测试通过 ✓")
-    else:
-        logger.info("  存在失败测试 ✗")
+    logger.info("  全部测试通过 ✓" if all_passed else "  存在失败测试 ✗")
     logger.info("=" * 55)
     return all_passed
 
 
 async def listen_mode():
     """持续运行全栈（Mock + SchedulerService），配合终端手动 nats pub 测试。"""
-    from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
-    from Hardware.PlanarMotor.scheduler_service.service import SchedulerService
-    from Hardware.PlanarMotor.scheduler_service.tests.unit_motion.mock_motion_1718 import MockMotion1718
-
     logger.info("=" * 55)
     logger.info("  手动集成测试 — 全栈持续运行")
     logger.info("=" * 55)
 
-    # ---- 启动 Mock Socket Server ----
-    mock = MockMotion1718("127.0.0.1", MOCK_SOCKET_PORT)
-    mock_thread = threading.Thread(target=mock.start, daemon=True)
-    mock_thread.start()
-    time.sleep(0.3)
-    logger.info(f"✓ Mock Motion_1718 已启动 :{MOCK_SOCKET_PORT}")
-
-    # ---- 启动 SchedulerService ----
-    cfg = SchedulerConfig(
-        nats_server="nats://localhost:4222",
-        tenant="bioflow", env="test", lab="lab01",
-        socket_host="127.0.0.1", socket_port=MOCK_SOCKET_PORT,
-        motor_ip="192.168.10.120",
-    )
-    svc = SchedulerService(cfg)
-
     try:
-        await svc.start()
+        mock, svc, cfg = await _start_stack()
     except Exception as e:
-        logger.error(f"SchedulerService 启动失败: {e}")
+        logger.error(f"启动失败: {e}")
         logger.error("请确认 nats-server 已启动: nats-server")
-        mock.stop()
         return 1
 
-    logger.info("✓ SchedulerService 已启动，等待 NATS 指令...")
-    logger.info("  在另一个终端用 nats pub 发送指令:")
-    logger.info("    nats pub --force-stdin bioflow.test.lab01.device._.motor.control.move")
+    logger.info("在另一个终端用 nats pub 发送指令:")
+    logger.info(f"    nats pub --force-stdin {move_subject(cfg)}")
     logger.info("  Ctrl+C 退出\n")
 
     try:
@@ -219,8 +183,11 @@ async def listen_mode():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--listen", action="store_true",
-                        help="手动 CLI 测试：持续运行全栈，配合终端 nats pub")
+    parser.add_argument(
+        "--listen",
+        action="store_true",
+        help="手动 CLI 测试：持续运行全栈，配合终端 nats pub",
+    )
     args = parser.parse_args()
 
     if args.listen:

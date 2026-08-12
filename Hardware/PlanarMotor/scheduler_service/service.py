@@ -27,6 +27,7 @@ class SchedulerService:
         self.move_subj = move_subject(cfg)
         self.release_subj = release_subject(cfg)
         self.socket = SocketClient(cfg)
+        self._health_task = None
         self._running = False
         self._nats_connected = False
         self._socket_healthy = False
@@ -74,8 +75,8 @@ class SchedulerService:
             reconnected_cb=self._on_nats_reconnected,
             error_cb=self._on_nats_error,
         )
-        self._nats_connected = True
         logger.info("已连接到 NATS Server")
+        self._nats_connected = True
 
         # 2) 订阅 move / release
         await self.nc.subscribe(self.move_subj, cb=self._on_move)
@@ -101,7 +102,7 @@ class SchedulerService:
     async def stop(self):
         """停止服务"""
         self._running = False
-        if hasattr(self, '_health_task'):
+        if self._health_task:
             self._health_task.cancel()
         await asyncio.to_thread(self.socket.disconnect)
         if self.nc:
@@ -166,7 +167,7 @@ class SchedulerService:
         }
 
         # 调度（占位）
-        planned = await self._schedule(move_req)
+        planned = self._schedule(move_req)
         if planned:
             await self._execute(planned)
         else:
@@ -187,15 +188,15 @@ class SchedulerService:
 
     def _resolve_station(self, station_name: str) -> int | None:
         """将 station_name 完整字符串直接映射为 PMC 站点 ID"""
-        return self.cfg.device_to_station.get(str(station_name).strip())
+        return self.cfg.device_to_station.get(station_name.strip())
 
     # ---- 调度逻辑（占位） ----
 
-    async def _schedule(self, move_req: dict) -> dict | None:
+    def _schedule(self, move_req: dict) -> dict | None:
         """
         调度算法入口（占位）。
 
-        TODO: 替换为完整调度逻辑：
+        TODO: 替换为完整调度逻辑（届时可能需改为 async）：
           - DeviceTable 状态维护
           - 路径规划（Space-Time A*）
           - 冲突检测与解决

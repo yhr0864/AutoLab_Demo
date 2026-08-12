@@ -67,6 +67,7 @@ class MockMotion1718:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((self._host, self._port))
+        server.settimeout(1.0)  # 每 1 秒超时，使 stop() 能及时退出
         server.listen(5)
         self._running = True
         logger.info(f"Mock Motion_1718 启动: {self._host}:{self._port}")
@@ -77,6 +78,8 @@ class MockMotion1718:
                 logger.info(f"客户端连接: {addr}")
                 t = threading.Thread(target=self._handle, args=(conn,), daemon=True)
                 t.start()
+            except socket.timeout:
+                continue  # 超时后检查 _running 标志
             except Exception as e:
                 if self._running:
                     logger.error(f"Socket 错误: {e}")

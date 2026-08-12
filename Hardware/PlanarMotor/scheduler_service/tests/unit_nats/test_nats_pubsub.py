@@ -32,6 +32,8 @@ import json
 import logging
 import sys
 
+from Hardware.PlanarMotor.scheduler_service.tests.test_config import get_test_config
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -39,24 +41,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("test-nats")
 
+tcfg = get_test_config()
+
+
+def _build_nats_only_cfg():
+    """仅含 NATS 相关参数的 SchedulerConfig"""
+    from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
+
+    return SchedulerConfig(
+        nats_server=tcfg.nats_server,
+        tenant=tcfg.tenant,
+        env=tcfg.env,
+        lab=tcfg.lab,
+    )
+
 
 async def _connect_and_subscribe():
     """连接 NATS 并订阅 move/release，返回 (nc, move_subj, release_subj)。"""
     import nats
 
-    from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
     from Hardware.PlanarMotor.scheduler_service.subjects import (
         move_subject,
         release_subject,
     )
 
-    cfg = SchedulerConfig(
-        nats_server="nats://localhost:4222",
-        tenant="bioflow",
-        env="test",
-        lab="lab01",
-    )
-
+    cfg = _build_nats_only_cfg()
     move_subj = move_subject(cfg)
     release_subj = release_subject(cfg)
     logger.info(f"Move subject:    {move_subj}")
@@ -64,7 +73,7 @@ async def _connect_and_subscribe():
 
     logger.info("正在连接 NATS...")
     nc = await nats.connect(
-        "nats://localhost:4222",
+        tcfg.nats_server,
         name="unit-test",
         connect_timeout=5,
     )
@@ -81,8 +90,6 @@ async def listen_mode():
         logger.error("请确认 nats-server 已启动: nats-server")
         return 1
 
-    count = 0
-
     async def on_move(msg):
         payload = json.loads(msg.data.decode())
         logger.info(f"[{payload.get('task_id', '?')}] ← move: {payload}")
@@ -96,7 +103,6 @@ async def listen_mode():
     logger.info("✓ 已订阅 move + release，等待消息... (Ctrl+C 退出)")
     logger.info("")
 
-    # 持续等待
     try:
         while True:
             await asyncio.sleep(1)
@@ -118,6 +124,14 @@ async def run_test():
         logger.error("请确认 nats-server 已启动: nats-server")
         return False
 
+    # ---- 从测试配置取 station 列表 ----
+    stations = list(tcfg.device_to_station.keys())
+    if len(stations) < 2:
+        logger.error("device_to_station 至少需要 2 个条目")
+        await nc.close()
+        return False
+    s1, s2 = stations[0], stations[1]
+
     # ---- 存储收到的消息 ----
     received_move = []
     received_release = []
@@ -136,13 +150,13 @@ async def run_test():
     await nc.subscribe(release_subj, cb=on_release)
     logger.info("✓ 已订阅 move + release")
 
-    # ---- 测试 1: 发布 move 消息 ----
+    # ---- 测试 1: 发布 move (pickup) ----
     logger.info("\n--- 测试 1: 发布 move (pickup) ---")
     move_payload = {
         "action": "move",
         "move_type": "pickup",
-        "ip": "192.168.10.120",
-        "station_name": "station_02_pcr_01",
+        "ip": tcfg.motor_ip,
+        "station_name": s1,
         "task_id": "nats-test-1",
     }
     data = json.dumps(move_payload, ensure_ascii=False).encode()
@@ -151,12 +165,13 @@ async def run_test():
 
     await asyncio.sleep(0.3)
 
+    ok = True
     if len(received_move) == 1:
         msg = received_move[0]
         ok = (
             msg.get("action") == "move"
             and msg.get("move_type") == "pickup"
-            and msg.get("station_name") == "station_02_pcr_01"
+            and msg.get("station_name") == s1
         )
         if ok:
             logger.info("  ✓ PASS: move 消息字段正确")
@@ -170,7 +185,7 @@ async def run_test():
     logger.info("\n--- 测试 2: 发布 release ---")
     release_payload = {
         "action": "release",
-        "ip": "192.168.10.120",
+        "ip": tcfg.motor_ip,
         "task_id": "nats-test-2",
     }
     data = json.dumps(release_payload, ensure_ascii=False).encode()
@@ -191,13 +206,13 @@ async def run_test():
         logger.error(f"  ✗ FAIL: 期望收到 1 条, 实际 {len(received_release)} 条")
         ok2 = False
 
-    # ---- 测试 3: 发布 move (deliver) 到 sealer ----
-    logger.info("\n--- 测试 3: 发布 move (deliver) → station_04_sealer_01 ---")
+    # ---- 测试 3: 发布 move (deliver) 到第二个 station ----
+    logger.info(f"\n--- 测试 3: 发布 move (deliver) → {s2} ---")
     move2_payload = {
         "action": "move",
         "move_type": "deliver",
-        "ip": "192.168.10.120",
-        "station_name": "station_04_sealer_01",
+        "ip": tcfg.motor_ip,
+        "station_name": s2,
         "task_id": "nats-test-3",
     }
     data = json.dumps(move2_payload, ensure_ascii=False).encode()
@@ -212,7 +227,7 @@ async def run_test():
         ok3 = (
             msg.get("action") == "move"
             and msg.get("move_type") == "deliver"
-            and msg.get("station_name") == "station_04_sealer_01"
+            and msg.get("station_name") == s2
         )
         if ok3:
             logger.info("  ✓ PASS: deliver 消息字段正确")
@@ -224,8 +239,8 @@ async def run_test():
 
     # ---- 测试 4: subject 格式验证 ----
     logger.info("\n--- 测试 4: subject 格式 ---")
-    expected_move = "bioflow.test.lab01.device._.motor.control.move"
-    expected_release = "bioflow.test.lab01.device._.motor.control.release"
+    expected_move = f"{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.control.move"
+    expected_release = f"{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.control.release"
     all_ok = ok and ok2 and ok3
     if move_subj == expected_move:
         logger.info("  ✓ PASS: move subject 格式正确")

@@ -66,7 +66,7 @@ python -m Hardware.PlanarMotor.scheduler_service.main
 | `--lab` | `lab01` | 实验室标识 |
 | `--socket-host` | `127.0.0.1` | Motion_1718 socket 地址 |
 | `--socket-port` | `8888` | Motion_1718 socket 端口 |
-| `--motor-ip` | `192.168.10.120` | 中控台 IP（写入 NATS payload） |
+| `--motor-ip` | `192.168.0.50` | 中控台 IP（写入 NATS payload） |
 
 ```bash
 # 连接到远程 NATS
@@ -91,7 +91,7 @@ python -m Hardware.PlanarMotor.scheduler_service.main --socket-host 192.168.0.50
 {
     "action":       "move",
     "move_type":    "pickup",
-    "ip":           "192.168.10.120",
+    "ip":           "192.168.0.50",
     "station_name": "station_02_pcr_01",
     "task_id":      "transport-001→pcr"
 }
@@ -110,7 +110,7 @@ python -m Hardware.PlanarMotor.scheduler_service.main --socket-host 192.168.0.50
 ```json
 {
     "action":  "release",
-    "ip":      "192.168.10.120",
+    "ip":      "192.168.0.50",
     "task_id": "transport-001-pcr"
 }
 ```
