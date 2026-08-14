@@ -26,12 +26,15 @@ NATS Server ──(pub)──→ MotorService ──(TCP)──→ MockMotion171
 | 组件 | 文件 | 说明 |
 |------|------|------|
 | Mock Socket | `../unit_motion/mock_motion_1718.py` | 模拟 Motion_1718 TCP server (端口 8889) |
-| 配置 | `../../config.py` | 测试环境使用 `env=test` |
+| 配置 | `../test_config.py` | `TestConfig` 继承生产的 `../../config.py`（`env=test`、`socket_port=8889`） |
 | Subject 构建 | `../../subjects.py` | move/release/arrived subject 格式 |
 | 运输服务 | `../../service.py` | MotorService（通配符订阅 motor.control.>） |
 | Socket 客户端 | `../../socket_client.py` | 真实 SocketClient（仅 real 模式使用） |
 
 ## 两种测试方式
+
+> mock / real 由 `tests/test_config.py` 的 `mock_mode` 字段决定（默认 `True`=mock，设为 `False`=real）；
+> 也可以用 `--mock-mode false` / `--mock-mode true` 在命令行直接覆盖，无需改文件。
 
 ### 1. 快速自动化测试
 
@@ -49,13 +52,19 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration
 ### 2. 手动 CLI 测试
 
 全栈持续运行，在另一个终端手动 `nats pub` 发指令，实时观察日志。
+`--listen` 的档位由 `TestConfig.mock_mode` 决定，命令行 `--mock-mode` 可直接覆盖：
+
+- `--listen --mock-mode true`（默认）→ 只起 MotorService，走生产 `_sim_exec`
+- `--listen --mock-mode false`（real）→ 额外启动 MockMotion1718（:8889），走 socket 通路
+
+#### mock 模式（默认）
 
 **终端 1 — 启动 NATS：**
 ```bash
 nats-server
 ```
 
-**终端 2 — 启动全栈（Mock + MotorService）：**
+**终端 2 — 启动 MotorService：**
 ```bash
 python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
 ```
@@ -77,19 +86,54 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
 [motor:planar_motor-1] arrived published: m1
 ```
 
+#### real 模式（`--mock-mode false`）
+
+**终端 1 — 启动 NATS：**
+```bash
+nats-server
+```
+
+**终端 2 — 启动全栈（MockMotion1718 + MotorService）：**
+```bash
+python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen --mock-mode false
+```
+
+启动日志比 mock 模式多出 real 档特有的 socket 链路：
+```
+✓ Mock Motion_1718 已启动 :8889
+✓ MotorService 已启动
+[motor:planar_motor-1] Socket 已连接: 127.0.0.1:8889
+```
+
+**终端 3 — 手动发布 move 指令（与 mock 模式相同）：**
+```powershell
+'{"action":"move","move_type":"pickup","ip":"192.168.0.50","station_name":"station_02_pcr_01","task_id":"m1"}' | nats pub --server nats://10.169.30.21:4222 --force-stdin bioflow.test.test.lab01.device._.motor.control.move
+```
+
+终端 2 会实时打印（real 模式）——与 mock 模式不同，这里走了真实的 socket 通路：
+```
+[motor:planar_motor-1] motor.control.move received: task=m1
+[motor:planar_motor-1] MOTOR task=m1 action=move
+[motor:planar_motor-1] [EXEC] station 1 2 (task_id=m1)
+[motor:planar_motor-1] [ACK] 动子 1 已到达 Station 2 (PMC 确认)
+[motor:planar_motor-1] [ACK] 到位验证通过: Mover 1 @ Station 2
+[motor:planar_motor-1] arrived published: m1
+```
+
+`[EXEC]` → `[ACK]` 是 real 档特有链路：`_execute_station` 把 `station` 指令下发到 MockMotion1718（模拟 3s 运动耗时），解析 `OK:` 响应并做 `verify_arrival` 到位验证，之后才上报 `arrived`。
+
 ## 自动化测试流程
 
-**mock_mode=True（默认）**：
+**mock_mode=True（默认，或 `--mock-mode true`）**：
 ```
-① 启动 Mock Motion_1718 (本机 :8889，新线程 — 备用)
-② 启动 MotorService (连接 NATS，不连 socket)
-③ 通过 NATS 发布 move 指令到精确 subject
-④ 通配符订阅接收 → simExec 3s → 发布 motor.status.arrived
-⑤ 验证 arrived 事件包含正确 task_id
-⑥ 清理资源
+① 启动 MotorService（连接 NATS，不连 socket，也不起 MockMotion1718）
+② 通过 NATS 发布 move 指令到精确 subject
+③ 通配符订阅接收 → simExec 3s → 发布 motor.status.arrived
+④ 验证 arrived 事件包含正确 task_id
+⑤ 清理资源
 ```
 
-**mock_mode=False（real 模式）**：
+**mock_mode=False（`--mock-mode false`，real 模式）**：
 ```
 ① 启动 Mock Motion_1718 (本机 :8889，新线程)
 ② 启动 MotorService (连接 NATS + Socket)
@@ -116,7 +160,6 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
   集成测试: NATS → MotorService → Mock Socket
   mock_mode=True
 =======================================================
-✓ Mock Motion_1718 已启动 :8889
 ✓ MotorService 已启动
 
 --- 测试: PCR pickup ---
@@ -124,7 +167,7 @@ python -m Hardware.PlanarMotor.scheduler_service.tests.test_integration --listen
   ✓ PASS: arrived 事件已发布 (task_id=test-PCR pickup)
 
 --- 测试: Sealer deliver ---
-  已发布: bioflow.test.lab01.device._.motor.control.move → {...}
+  已发布: bioflow.test.test.lab01.device._.motor.control.move → {...}
   ✓ PASS: arrived 事件已发布 (task_id=test-Sealer deliver)
 
 =======================================================
@@ -163,4 +206,4 @@ kill <PID>
 
 ### "Connection refused :8889"
 
-Mock server 可能未能启动，检查端口是否已被占用。可在 `test_integration.py` 中修改 `MOCK_SOCKET_PORT` 变量换用其他端口。
+Mock server 可能未能启动，检查端口是否已被占用。可在 `tests/test_config.py` 的 `TestConfig` 中修改 `socket_port` 字段换用其他端口。

@@ -7,40 +7,19 @@
 
 from dataclasses import dataclass, field
 
+from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
+
 
 @dataclass
-class TestConfig:
-    """测试环境统一配置"""
+class TestConfig(SchedulerConfig):
+    """测试环境统一配置：继承生产 SchedulerConfig，仅覆盖测试差异并追加测试专用字段。"""
 
     # ==========================================================================
-    # NATS 连接
+    # 覆盖生产默认值（其余字段 nats_server/lab/motor_name/mock_mode/device_to_station 直接继承）
     # ==========================================================================
-    nats_server: str = "nats://10.169.30.21:4222"
     tenant: str = "test"  # 租户标识（bioflow 是平台硬编码前缀）
     env: str = "test"
-    lab: str = "lab01"
-
-    # ==========================================================================
-    # Mock Socket (模拟 Motion_1718)
-    # ==========================================================================
-    mock_socket_host: str = "127.0.0.1"
-    mock_socket_port: int = 8889  # 与生产 8888 错开
-
-    # ==========================================================================
-    # 电机
-    # ==========================================================================
-    motor_name: str = "planar_motor-1"
-    mock_mode: bool = True  # 集成测试默认使用 mock 模式（3s simExec）
-
-    # ==========================================================================
-    # Station 映射 (与生产 config.py 保持一致)
-    # ==========================================================================
-    device_to_station: dict = field(
-        default_factory=lambda: {
-            "station_02_pcr_01": 2,
-            "station_04_sealer_01": 4,
-        }
-    )
+    socket_port: int = 8889  # 指向 MockMotion1718，与生产 8888 错开
 
     # ==========================================================================
     # 集成测试用例

@@ -44,18 +44,6 @@ logger = logging.getLogger("test-nats")
 tcfg = get_test_config()
 
 
-def _build_nats_only_cfg():
-    """仅含 NATS 相关参数的 SchedulerConfig"""
-    from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
-
-    return SchedulerConfig(
-        nats_server=tcfg.nats_server,
-        tenant=tcfg.tenant,
-        env=tcfg.env,
-        lab=tcfg.lab,
-    )
-
-
 async def _connect_and_subscribe():
     """连接 NATS 并订阅 move/release，返回 (nc, move_subj, release_subj)。"""
     import nats
@@ -68,7 +56,7 @@ async def _connect_and_subscribe():
         release_subject,
     )
 
-    cfg = _build_nats_only_cfg()
+    cfg = tcfg
     move_subj = move_subject(cfg)
     release_subj = release_subject(cfg)
     ctrl_subj = motor_control_subject(cfg)
@@ -311,7 +299,7 @@ async def run_test():
 
     # ---- 测试 6: arrived subject 格式 ----
     logger.info("\n--- 测试 6: arrived subject ---")
-    arrived_subj = arrived_subject(_build_nats_only_cfg())
+    arrived_subj = arrived_subject(tcfg)
     expected_arrived = f"bioflow.{tcfg.tenant}.{tcfg.env}.{tcfg.lab}.device._.motor.status.arrived"
     if arrived_subj == expected_arrived:
         logger.info(f"  ✓ PASS: arrived subject 格式正确")

@@ -29,7 +29,6 @@ import time
 
 import nats
 
-from Hardware.PlanarMotor.scheduler_service.config import SchedulerConfig
 from Hardware.PlanarMotor.scheduler_service.service import MotorService
 from Hardware.PlanarMotor.scheduler_service.subjects import (
     arrived_subject,
@@ -51,28 +50,21 @@ logger = logging.getLogger("test")
 tcfg = get_test_config()
 
 
-def _build_cfg():
-    """用测试配置构建 SchedulerConfig"""
-    return SchedulerConfig(
-        nats_server=tcfg.nats_server,
-        tenant=tcfg.tenant,
-        env=tcfg.env,
-        lab=tcfg.lab,
-        socket_host=tcfg.mock_socket_host,
-        socket_port=tcfg.mock_socket_port,
-        motor_name=tcfg.motor_name,
-        mock_mode=tcfg.mock_mode,
-    )
+def _parse_bool(v: str) -> bool:
+    """解析布尔型 CLI 参数"""
+    return v.lower() in ("true", "1", "yes")
 
 
 async def _start_stack():
-    """启动 Mock + MotorService，返回 (mock, svc, cfg)。失败抛异常。"""
-    mock = MockMotion1718(tcfg.mock_socket_host, tcfg.mock_socket_port, silent_status=True)
-    threading.Thread(target=mock.start, daemon=True).start()
-    time.sleep(0.3)
-    logger.info(f"✓ Mock Motion_1718 已启动 :{tcfg.mock_socket_port}")
+    """启动 Mock（仅 real 模式）+ MotorService，返回 (mock, svc, cfg)。失败抛异常。"""
+    mock = None
+    if not tcfg.mock_mode:
+        mock = MockMotion1718(tcfg.socket_host, tcfg.socket_port, silent_status=True)
+        threading.Thread(target=mock.start, daemon=True).start()
+        time.sleep(0.3)
+        logger.info(f"✓ Mock Motion_1718 已启动 :{tcfg.socket_port}")
 
-    cfg = _build_cfg()
+    cfg = tcfg
     svc = MotorService(cfg)
     await svc.start()
     logger.info("✓ MotorService 已启动")
@@ -172,7 +164,8 @@ async def run_test():
 
     # ---- 清理 ----
     await svc.stop()
-    mock.stop()
+    if mock:
+        mock.stop()
     logger.info("\n" + "=" * 55)
     logger.info("  全部测试通过 ✓" if all_passed else "  存在失败测试 ✗")
     logger.info("=" * 55)
@@ -205,7 +198,8 @@ async def listen_mode():
         logger.info("\n正在停止...")
     finally:
         await svc.stop()
-        mock.stop()
+        if mock:
+            mock.stop()
         logger.info("已断开")
     return 0
 
@@ -217,7 +211,16 @@ if __name__ == "__main__":
         action="store_true",
         help="手动 CLI 测试：持续运行全栈，配合终端 nats pub",
     )
+    parser.add_argument(
+        "--mock-mode",
+        type=_parse_bool,
+        help="覆盖 TestConfig.mock_mode: true=mock（默认）, false=real（起 MockMotion1718 走 socket）",
+    )
     args = parser.parse_args()
+
+    if args.mock_mode is not None:
+        tcfg.mock_mode = args.mock_mode
+        logger.info(f"CLI 覆盖 mock_mode → {tcfg.mock_mode}")
 
     if args.listen:
         sys.exit(asyncio.run(listen_mode()))
