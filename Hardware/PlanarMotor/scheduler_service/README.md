@@ -137,8 +137,9 @@ scheduler_service/
 ├── __init__.py           # 包入口
 ├── config.py             # SchedulerConfig — 连接参数 + station 映射表 + motor 配置
 ├── subjects.py           # NATS subject 构建（精确 + 通配符 + arrived + get_motor_action）
+├── nats_client.py        # NatsClient — NATS 连接 / 订阅 / 发布（从 service.py 独立出来）
 ├── socket_client.py      # SocketClient — 长连接 TCP 通信 / 响应解析 / 到位验证
-├── service.py            # MotorService — 通配符订阅、simExec、arrived 发布、健康检查
+├── service.py            # MotorService — 业务逻辑（消息分发、simExec、socket 执行、arrived 上报）
 ├── main.py               # CLI 入口
 ├── tests/                # 模拟测试（无硬件）
 │   ├── README.md             ← 测试总览

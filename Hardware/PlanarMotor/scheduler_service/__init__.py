@@ -3,6 +3,7 @@
 # scheduler_service/__init__.py
 
 from .config import SchedulerConfig
+from .nats_client import NatsClient
 from .service import MotorService
 from .socket_client import SocketClient
 from .subjects import (

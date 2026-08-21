@@ -3,17 +3,16 @@
 # scheduler_service/service.py — 电机运输服务（MotorService）
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 
 from .config import SchedulerConfig
+from .nats_client import NatsClient
+from .socket_client import SocketClient
 from .subjects import (
     arrived_subject,
     get_motor_action,
-    motor_control_subject,
 )
-from .socket_client import SocketClient
 
 logger = logging.getLogger("scheduler_service")
 
@@ -33,16 +32,15 @@ class MotorService:
 
     def __init__(self, cfg: SchedulerConfig):
         self.cfg = cfg
-        self.nc = None
-        self.control_subj = motor_control_subject(cfg)
         self.arrived_subj = arrived_subject(cfg)
         self.socket = SocketClient(cfg)
         self._stopped = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
         self._health_task = None
         self._running = False
-        self._nats_connected = False
         self._socket_healthy = False
+        # NATS 客户端（连接 + 通配符订阅 + 发布）
+        self.nats = NatsClient(cfg, motor_name=self.motor_name, msg_handler=self._on_msg)
 
     # ---- 属性 ----
 
@@ -58,49 +56,21 @@ class MotorService:
     def mock_mode(self) -> bool:
         return self.cfg.mock_mode
 
-    # ---- NATS 连接状态回调 ----
-
-    async def _on_nats_disconnected(self):
-        self._nats_connected = False
-        logger.error(f"[motor:{self.motor_name}] NATS 连接断开")
-
-    async def _on_nats_reconnected(self):
-        self._nats_connected = True
-        logger.info(f"[motor:{self.motor_name}] NATS 已重新连接")
-
-    async def _on_nats_error(self, e):
-        logger.error(f"[motor:{self.motor_name}] NATS 错误: {e}")
-
     # ---- 生命周期 ----
 
     async def start(self):
         """启动服务：连接 NATS + 订阅 motor.control.> + 条件启动 socket/健康检查"""
-        import nats
-
         logger.info("=" * 50)
         logger.info(f"  MotorService 启动中... (mock_mode={self.mock_mode})")
         logger.info("=" * 50)
         logger.info(f"  Motor Name  : {self.motor_name}")
         logger.info(f"  NATS Server : {self.cfg.nats_server}")
-        logger.info(f"  Control Subj: {self.control_subj}")
+        logger.info(f"  Control Subj: {self.nats.control_subj}")
 
-        # 1) 连接 NATS
-        self.nc = await nats.connect(
-            servers=self.cfg.nats_server,
-            name=f"motor-{self.motor_name}",
-            connect_timeout=5,
-            disconnected_cb=self._on_nats_disconnected,
-            reconnected_cb=self._on_nats_reconnected,
-            error_cb=self._on_nats_error,
-        )
-        logger.info(f"[motor:{self.motor_name}] 已连接到 NATS Server")
-        self._nats_connected = True
+        # 1) 连接 NATS + 订阅 motor.control.>（通配符，同时匹配 move/release）
+        await self.nats.connect()
 
-        # 2) 订阅 motor.control.>（通配符，同时匹配 move/release）
-        await self.nc.subscribe(self.control_subj, cb=self._on_msg)
-        logger.info(f"[motor:{self.motor_name}] 已订阅: {self.control_subj}")
-
-        # 3) 仅 real 模式连接 socket + 健康检查
+        # 2) 仅 real 模式连接 socket + 健康检查
         if not self.mock_mode:
             try:
                 await asyncio.to_thread(self.socket.connect)
@@ -127,22 +97,14 @@ class MotorService:
         if self._health_task:
             self._health_task.cancel()
         await asyncio.to_thread(self.socket.disconnect)
-        if self.nc:
-            await self.nc.close()
-            logger.info(f"[motor:{self.motor_name}] NATS 连接已关闭")
+        await self.nats.close()
 
     # ---- NATS 消息回调（通配符订阅入口）----
 
-    async def _on_msg(self, msg):
-        """通配符订阅回调：解析 payload，提取 action，创建并发任务"""
-        try:
-            payload = json.loads(msg.data.decode())
-        except json.JSONDecodeError:
-            logger.error(f"[motor:{self.motor_name}] payload JSON 解析失败: {msg.data}")
-            return
-
+    async def _on_msg(self, subject: str, payload: dict):
+        """消息处理器：提取 action，创建并发任务（由 NatsClient 解码后回调）"""
         task_id = payload.get("task_id", "")
-        action = get_motor_action(msg.subject)
+        action = get_motor_action(subject)
         logger.info(f"[motor:{self.motor_name}] motor.control.{action} received: task={task_id}")
 
         if task_id:
@@ -205,7 +167,7 @@ class MotorService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            await self.nc.publish(self.arrived_subj, json.dumps(payload).encode())
+            await self.nats.publish(self.arrived_subj, payload)
             logger.info(f"[motor:{self.motor_name}] arrived published: {task_id}")
         except Exception as e:
             logger.error(f"[motor:{self.motor_name}] publish arrived failed: {e}")
